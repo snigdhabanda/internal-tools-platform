@@ -51,6 +51,17 @@ export function RequestRefundForm() {
     setBusy(false);
     if (!res.ok) {
       const detail = data.issues?.map((i: { path: string[]; message: string }) => `${i.path.join(".")}: ${i.message}`).join("; ");
+      if (res.status === 409) {
+        // The key already produced a refund with different details: show it, and let the
+        // next submit (an explicit second action) start a new attempt instead of 409ing forever.
+        idempotencyKey.current = null;
+        setMessage({
+          kind: "error",
+          text: `${data.error ?? "Conflict"}. Your earlier attempt already went through; check the table. Submitting again creates a new refund.`,
+        });
+        startTransition(() => router.refresh());
+        return;
+      }
       setMessage({ kind: "error", text: detail || data.error || "Request failed" });
       return;
     }
