@@ -1,0 +1,116 @@
+// SQLite has no native enums or JSON columns, so enum-like fields are strings
+// (validated in application code) and JSON payloads are serialized strings.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Platform core ----------
+
+model User {
+  id    String @id
+  name  String
+  email String @unique
+  /// Comma-separated roles: reviewer | approver | admin
+  roles String
+
+  approvalsRequested ApprovalRequest[] @relation("ApprovalRequestedBy")
+  approvalsApproved  ApprovalRequest[] @relation("ApprovalApprovedBy")
+  approvalsRejected  ApprovalRequest[] @relation("ApprovalRejectedBy")
+  refundsRequested   Refund[]
+  kycAssigned        KycCase[]
+}
+
+/// Append-only. Database triggers (see migrations) reject UPDATE and DELETE.
+/// actorId is intentionally not a foreign key so audit history survives user changes.
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  action     String
+  entityType String
+  entityId   String
+  before     String?
+  after      String?
+  timestamp  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([timestamp])
+}
+
+/// Generic maker-checker request. `payload` is app-defined JSON.
+model ApprovalRequest {
+  id            String    @id @default(cuid())
+  entityType    String
+  entityId      String
+  payload       String
+  /// pending | approved | rejected
+  status        String    @default("pending")
+  requestedById String
+  requestedBy   User      @relation("ApprovalRequestedBy", fields: [requestedById], references: [id])
+  approvedById  String?
+  approvedBy    User?     @relation("ApprovalApprovedBy", fields: [approvedById], references: [id])
+  rejectedById  String?
+  rejectedBy    User?     @relation("ApprovalRejectedBy", fields: [rejectedById], references: [id])
+  decisionNote  String?
+  decidedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([entityType, entityId])
+  @@index([status])
+}
+
+// ---------- App: Refunds ----------
+
+model Refund {
+  id                String   @id @default(cuid())
+  customerName      String
+  customerEmail     String
+  chargeId          String
+  amountCents       Int
+  currency          String   @default("usd")
+  reason            String
+  /// processing | pending_approval | executed | rejected | failed
+  status            String
+  requestedById     String
+  requestedBy       User     @relation(fields: [requestedById], references: [id])
+  approvalRequestId String?
+  providerRefundId  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status])
+}
+
+// ---------- App: KYC review queue ----------
+
+model KycCase {
+  id             String   @id @default(cuid())
+  applicantName  String
+  email          String
+  dateOfBirth    String
+  country        String
+  /// PII: never return unmasked to non-approvers (see lib/apps/kyc/present.ts)
+  ssn            String
+  idType         String
+  /// PII: never return unmasked to non-approvers (see lib/apps/kyc/present.ts)
+  idNumber       String
+  /// submitted | in_review | approved | rejected | escalated
+  status         String   @default("submitted")
+  assignedToId   String?
+  assignedTo     User?    @relation(fields: [assignedToId], references: [id])
+  escalatedById  String?
+  vendorCheckId  String?
+  vendorResult   String?
+  riskScore      Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+}
