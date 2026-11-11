@@ -22,7 +22,7 @@ export const transitionSchema = z
   .superRefine((b, ctx) => {
     if (b.action === "claim") return;
     const codes = KYC_REASON_CODES[b.action];
-    if (!b.reasonCode || !(b.reasonCode in codes)) {
+    if (!b.reasonCode || !Object.hasOwn(codes, b.reasonCode)) {
       ctx.addIssue({ code: "custom", path: ["reasonCode"], message: `A reason code is required to ${b.action}: one of ${Object.keys(codes).join(", ")}` });
     }
     if (!b.note || b.note.length < 3) ctx.addIssue({ code: "custom", path: ["note"], message: `A note is required to ${b.action}` });
@@ -31,6 +31,11 @@ export type TransitionInput = z.infer<typeof transitionSchema>;
 
 const SSN = /^\d{3}-\d{2}-\d{4}$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** Rejects impossible dates like 2026-02-30 (which Date would roll over to March 2) and future dates. */
+const isPastCalendarDay = (v: string) => {
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v && d.getTime() < Date.now();
+};
 
 /**
  * CIP intake (31 CFR 1020.220): name, DOB, residential address, and an identification number.
@@ -41,7 +46,7 @@ export const createCaseSchema = z
   .object({
     applicantName: z.string().trim().min(2).max(200),
     email: z.string().trim().email(),
-    dateOfBirth: z.string().regex(DAY, "YYYY-MM-DD"),
+    dateOfBirth: z.string().regex(DAY, "YYYY-MM-DD").refine(isPastCalendarDay, "Must be a real date in the past"),
     addressLine1: z.string().trim().min(3).max(200),
     addressLine2: z.string().trim().max(200).optional(),
     city: z.string().trim().min(1).max(100),

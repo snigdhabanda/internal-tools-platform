@@ -53,6 +53,12 @@ describe("KYC state machine", () => {
 describe("KYC CIP intake validation", () => {
   beforeAll(ensureUsers);
 
+  it("rejects impossible or future birth dates", async () => {
+    for (const dateOfBirth of ["2026-02-30", "1990-13-01", "2999-01-01"]) {
+      expect((await intake({ ...US_CASE, dateOfBirth })).status).toBe(400);
+    }
+  });
+
   it("accepts a US person identified by SSN, and audits it without PII", async () => {
     const res = await intake(US_CASE);
     expect(res.status).toBe(201);
@@ -88,6 +94,15 @@ describe("KYC CIP intake validation", () => {
 
 describe("KYC routes", () => {
   beforeAll(ensureUsers);
+
+  it("rejects inherited property names as reason codes", async () => {
+    const c = await newCase("in_review", { assignedToId: "t_reviewer" });
+    for (const reasonCode of ["__proto__", "toString", "constructor"]) {
+      const res = await transition(c.id, { action: "escalate", reasonCode, note: "Testing reason validation" }, "reviewer");
+      expect(res.status).toBe(400);
+    }
+    expect((await prisma.kycCase.findUniqueOrThrow({ where: { id: c.id } })).status).toBe("in_review");
+  });
 
   it("claim -> approve happy path, with vendor checks, decision record and audit", async () => {
     const c = await newCase();
