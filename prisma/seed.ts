@@ -227,39 +227,72 @@ async function main() {
   const framePending = charges.find((c) => c.amountCents >= 520_00 && !large.includes(c) && c.id !== twice.id && c.id !== bigPending.id && charges.indexOf(c) >= 14)!;
   await refund({ charge: framePending, amountCents: 520_00, requestedById: "u_frank", at: ago(0.5 * HOUR), outcome: "pending_approval", reason: "fraudulent" });
 
-  const statuses = [
-    ...Array(8).fill("submitted"),
-    "in_review",
-    "in_review",
-    "escalated",
-    "escalated",
-    "approved",
-    "approved",
-    "rejected",
+  // ---- KYC cases (CIP: name, DOB, address, TIN for US persons / passport or gov ID otherwise). ----
+  const statuses = [...Array(7).fill("submitted"), "in_review", "in_review", "escalated", "escalated", "approved", "approved", "rejected", "pending_rejection"];
+  const nonUs = [
+    { country: "GB", region: "Greater London", city: "London" },
+    { country: "CA", region: "Ontario", city: "Toronto" },
+    { country: "DE", region: "Berlin", city: "Berlin" },
+    { country: "MX", region: "CDMX", city: "Mexico City" },
   ];
-  for (const status of statuses) {
+  const checks = ["pass", "pass", "pass", "pass", "needs_review", "fail"] as const;
+  for (const [i, status] of statuses.entries()) {
     const createdAt = faker.date.recent({ days: 14 });
     const claimed = status !== "submitted";
     const applicant = fakePerson();
+    const us = i % 3 !== 1;
+    const place = us ? { country: "US", region: faker.location.state({ abbreviated: true }), city: faker.location.city() } : nonUs[i % nonUs.length];
+    const passport = !us && i % 2 === 0;
+    // All-clear cases for the approved and pending-rejection examples; mixed results otherwise.
+    const allClear = status === "approved" || status === "pending_rejection";
+    const result = () => (allClear ? "pass" : faker.helpers.arrayElement(checks));
+    const decided = ["approved", "rejected", "escalated", "pending_rejection"].includes(status);
+    const decision = {
+      approved: ["identity_verified", "All four checks passed; documents match application."],
+      rejected: ["document_invalid_or_expired", "Passport scan expired; customer asked to resubmit."],
+      escalated: ["potential_sanctions_match", "Name is a partial match on the OFAC SDN list; needs approver review."],
+      pending_rejection: ["suspected_fraud", "Address belongs to a known mail-drop service despite clear checks."],
+    }[status as string] ?? ["", ""];
     const kycCase = await prisma.kycCase.create({
       data: {
         applicantName: applicant.name,
         email: applicant.email,
         dateOfBirth: faker.date.birthdate({ min: 18, max: 80, mode: "age" }).toISOString().slice(0, 10),
-        country: faker.helpers.arrayElement(["US", "US", "US", "CA", "GB"]),
-        ssn: fakeSsn(),
-        idType: faker.helpers.arrayElement(["drivers_license", "passport", "state_id"]),
-        idNumber: faker.string.alphanumeric({ length: 9, casing: "upper" }),
+        addressLine1: faker.location.streetAddress(),
+        addressLine2: i % 4 === 0 ? faker.location.secondaryAddress() : null,
+        city: place.city,
+        region: place.region,
+        postalCode: us ? faker.location.zipCode("#####") : faker.location.zipCode(),
+        country: place.country,
+        isUSPerson: us,
+        idType: us ? "ssn" : passport ? "passport" : "other_gov_id",
+        idNumber: us ? fakeSsn() : faker.string.alphanumeric({ length: 9, casing: "upper" }),
+        idCountry: us ? null : place.country,
+        idExpiry: passport ? faker.date.future({ years: 8 }).toISOString().slice(0, 10) : null,
         status,
         assignedToId: claimed ? faker.helpers.arrayElement(["u_alice", "u_bob"]) : null,
         escalatedById: status === "escalated" ? "u_bob" : null,
         vendorCheckId: claimed ? `chk_${faker.string.alphanumeric(8).toLowerCase()}` : null,
-        vendorResult: claimed ? faker.helpers.arrayElement(["clear", "consider"]) : null,
-        riskScore: claimed ? faker.number.int({ min: 1, max: 99 }) : null,
+        identityCheck: claimed ? result() : null,
+        documentCheck: claimed ? result() : null,
+        sanctionsCheck: claimed ? (status === "escalated" ? "needs_review" : result()) : null,
+        pepCheck: claimed ? result() : null,
+        riskScore: claimed ? (allClear ? faker.number.int({ min: 3, max: 35 }) : faker.number.int({ min: 1, max: 99 })) : null,
+        decisionReason: decided ? decision[0] : null,
+        decisionNote: decided ? decision[1] : null,
+        decidedById: decided ? (status === "approved" ? "u_alice" : "u_bob") : null,
+        decidedAt: decided ? new Date(createdAt.getTime() + 2 * HOUR) : null,
         createdAt,
       },
     });
     await log(SYSTEM, "seed.created", "KycCase", kycCase.id, createdAt, { status: kycCase.status });
+    if (status === "pending_rejection") {
+      const approval = await prisma.approvalRequest.create({
+        data: { entityType: "KycCase", entityId: kycCase.id, requestedById: kycCase.decidedById!, payload: JSON.stringify({ caseId: kycCase.id, reasonCode: decision[0], fromStatus: "in_review" }), createdAt: kycCase.decidedAt! },
+      });
+      await prisma.kycCase.update({ where: { id: kycCase.id }, data: { approvalRequestId: approval.id } });
+      await log(kycCase.decidedById!, "approval.requested", "ApprovalRequest", approval.id, kycCase.decidedAt!, approval);
+    }
   }
 
   console.log(`Seeded ${USERS.length} users, ${charges.length + 1} charges, ${refundCount} refunds, ${statuses.length} KYC cases.`);

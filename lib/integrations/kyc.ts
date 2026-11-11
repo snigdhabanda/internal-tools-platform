@@ -3,6 +3,8 @@
  * Replace with the real client; send only the fields the vendor needs.
  */
 
+export type CheckResult = "pass" | "fail" | "needs_review";
+
 export type KycCheckInput = {
   applicantName: string;
   dateOfBirth: string;
@@ -13,9 +15,9 @@ export type KycCheckInput = {
 
 export type KycCheckResult = {
   checkId: string;
-  result: "clear" | "consider";
-  riskScore: number; // 0-100
-  checks: { document: "clear" | "consider"; watchlist: "clear" | "consider" };
+  /** 0-100. Low < 40, Medium 40-69, High >= 70. */
+  riskScore: number;
+  checks: { identity: CheckResult; document: CheckResult; sanctions: CheckResult; pep: CheckResult };
 };
 
 function hash(s: string) {
@@ -24,17 +26,20 @@ function hash(s: string) {
   return h;
 }
 
+const pick = (n: number): CheckResult => (n < 80 ? "pass" : n < 93 ? "needs_review" : "fail");
+
 export const kycVendor = {
   async runCheck(input: KycCheckInput): Promise<KycCheckResult> {
     const h = hash(`${input.applicantName}|${input.dateOfBirth}|${input.idNumber}`);
-    const riskScore = h % 100;
-    const watchlist = riskScore > 85 ? "consider" : "clear";
-    const document = riskScore % 7 === 0 ? "consider" : "clear";
     return {
       checkId: `chk_${h.toString(36)}`,
-      result: watchlist === "clear" && document === "clear" ? "clear" : "consider",
-      riskScore,
-      checks: { document, watchlist },
+      riskScore: h % 100,
+      checks: {
+        identity: pick(h % 97),
+        document: pick((h >>> 3) % 97),
+        sanctions: pick(((h >>> 7) % 97) + 3),
+        pep: pick(((h >>> 11) % 97) + 2),
+      },
     };
   },
 };

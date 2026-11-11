@@ -25,14 +25,14 @@ Open http://localhost:3000 and pick a user from the user menu in the top right.
 
 | User | Roles | Try this |
 | --- | --- | --- |
-| Alice Chen | reviewer | Request refunds (search a charge by email or `ch_` ID), claim and work KYC cases. Sees masked SSNs. |
+| Alice Chen | reviewer | Request refunds (search a charge by email or `ch_` ID), claim and work KYC cases. Sees masked ID numbers, DOBs and street addresses. |
 | Bob Martinez | reviewer | A second maker. |
-| Carol Okafor | approver | Work the **Approvals** inbox (anything waiting over 24h is highlighted), approve or reject $500+ refunds (rejecting needs a reason), resolve escalated KYC cases. Sees full SSNs. |
+| Carol Okafor | approver | Work the **Approvals** inbox (anything waiting over 24h is highlighted), approve or reject $500+ refunds (rejecting needs a reason), resolve escalated KYC cases and sign off on rejections of all-clear cases. Sees full PII. |
 | Dave Singh | approver | A second checker. |
 | Frank Weber | reviewer, approver | Request a $600 refund, then see that you **cannot** approve it yourself. |
 | Erin Park | admin | The `/audit` page. Admin is *not* a superuser, so Erin sees masked PII and can't approve. |
 
-**Acceptance walkthrough:** as Frank, click **New refund**, search `@` for a charge with at least $600 refundable, and request a $600 (partial) refund. Click Approve and you get a maker-checker error. Switch to Carol, approve it, and it executes. Switch to Erin and open `/audit` to see `refund.requested`, `approval.requested`, `approval.approved`, and `refund.executed`. On `/apps/kyc`, Alice sees `•••-••-1234` and Carol sees the full SSN.
+**Acceptance walkthrough:** as Frank, click **New refund**, search `@` for a charge with at least $600 refundable, and request a $600 (partial) refund. Click Approve and you get a maker-checker error. Switch to Carol, approve it, and it executes. Switch to Erin and open `/audit` to see `refund.requested`, `approval.requested`, `approval.approved`, and `refund.executed`. On `/apps/kyc`, Alice sees `•••-••-1234` and masked DOB/address while Carol sees them in full; the "Pending 2nd approval" tab shows a rejection of an all-clear case waiting in Carol's inbox.
 
 ## Architecture
 
@@ -68,6 +68,7 @@ tests/               Vitest, incl. guardrails.test.ts
 - `tests/guardrails.test.ts` parses every `app/**/route.ts` with the TypeScript compiler API. It fails if any handler doesn't call `requireRole` first, if any write handler doesn't call `audit()`, if those functions aren't imported from the platform, or if any Server Action (`"use server"`) exists, since Server Actions would bypass the routes. It includes negative-control fixtures so the analyzer itself is tested.
 - AuditLog is append-only in two layers: the module has no update/delete functions, and SQLite triggers (in the init migration) reject `UPDATE`/`DELETE`. `tests/audit.test.ts` proves both, and also scans the source for any mutating `auditLog.*` call.
 - Writes and their audit entries happen in the same DB transaction, so an action can't succeed without being audited.
+- KYC follows the US CIP rule (31 CFR 1020.220): every case has name, DOB, residential address and an identifier (TIN/SSN for US persons; passport or other government ID plus issuing country for everyone else, never an SSN), enforced by `createCaseSchema`. Vendor results are four separate checks (identity, document, sanctions/OFAC, PEP). Every approve/reject/escalate needs a reason code and note, stored on the case and in the audit log. Rejecting a case whose checks all passed goes to a second approver. A DB trigger blocks deleting cases.
 - KYC transitions come from an explicit table and are checked on the server, with conditional updates to prevent races. PII is masked in `lib/apps/kyc/present.ts` before data leaves the service, and audit snapshots exclude PII.
 
 ## Known gaps vs production

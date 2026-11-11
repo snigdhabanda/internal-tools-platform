@@ -19,10 +19,11 @@ The reference implementations are **Refunds** (`lib/apps/refunds`, maker-checker
 3. **Never update or delete `AuditLog` rows.** No such API exists, and DB triggers reject it.
 4. **Anything needing a second person goes through `createApprovalRequest()`** (`@/lib/platform/approvals`). Never write your own approval logic. The platform enforces "approver ≠ requester".
 5. **Writes go through API routes in `app/api/apps/<id>/`.** Server Actions (`"use server"`) are forbidden, and the guardrail test fails on them.
-6. **Sensitive fields are masked on the server** before data leaves a service function. Never send raw rows containing PII to the client or put PII in audit `before`/`after`.
-7. **External systems are called only through a client in `lib/integrations/<name>.ts`.**
-8. **Every money-movement endpoint must be idempotent.** The client sends an `Idempotency-Key` header (a UUID per attempt, reused on retry); a missing key is `400`. Store it in a `@unique` column, return the original result for a repeated key without calling the provider again, audit the repeat as a duplicate, and pass the same key to the provider. Any status change that triggers money movement must be a conditional update (`updateMany({ where: { id, status: "<expected>" } })`), and the provider is called only if it matched a row. See `app/api/apps/refunds/route.ts` and `lib/apps/refunds/service.ts`.
-9. **Do not edit `lib/platform/*` or weaken `tests/guardrails.test.ts`** as part of an app PR. If the platform is missing something, raise it separately.
+6. **Decisions carry a reason.** Any approve/reject/escalate-style action takes a reason code from a fixed list plus a note, stored on the record and in the audit log. Records you are required to retain (e.g. KYC cases) get no delete route and a `BEFORE DELETE` trigger.
+7. **Sensitive fields are masked on the server** before data leaves a service function. Never send raw rows containing PII to the client or put PII in audit `before`/`after`.
+8. **External systems are called only through a client in `lib/integrations/<name>.ts`.**
+9. **Every money-movement endpoint must be idempotent.** The client sends an `Idempotency-Key` header (a UUID per attempt, reused on retry); a missing key is `400`. Store it in a `@unique` column, return the original result for a repeated key without calling the provider again, audit the repeat as a duplicate, and pass the same key to the provider. Any status change that triggers money movement must be a conditional update (`updateMany({ where: { id, status: "<expected>" } })`), and the provider is called only if it matched a row. See `app/api/apps/refunds/route.ts` and `lib/apps/refunds/service.ts`.
+10. **Do not edit `lib/platform/*` or weaken `tests/guardrails.test.ts`** as part of an app PR. If the platform is missing something, raise it separately.
 
 Roles: `reviewer` (makers / day-to-day operators), `approver` (checkers, may see PII), `admin` (platform admins: audit log, configuration). `admin` is **not** a superuser and does not imply the other roles.
 
