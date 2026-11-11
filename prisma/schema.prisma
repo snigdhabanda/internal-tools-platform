@@ -122,27 +122,53 @@ model Refund {
 
 // ---------- App: KYC review queue ----------
 
+/// US Customer Identification Program (31 CFR 1020.220): name, DOB, residential address, and an
+/// identification number (TIN for US persons; passport or other government ID + issuing country otherwise).
+/// Cases are never deleted: a DB trigger rejects DELETE (see migrations), and there is no delete route.
 model KycCase {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   applicantName  String
   email          String
+  /// PII: masked for non-approvers. YYYY-MM-DD
   dateOfBirth    String
+  /// PII (street + postal code masked for non-approvers)
+  addressLine1   String
+  addressLine2   String?
+  city           String
+  region         String
+  postalCode     String
+  /// Country of residence (ISO 3166-1 alpha-2)
   country        String
-  /// PII: never return unmasked to non-approvers (see lib/apps/kyc/present.ts)
-  ssn            String
+  isUSPerson     Boolean
+  /// ssn (US persons only) | passport | other_gov_id (non-US persons only)
   idType         String
   /// PII: never return unmasked to non-approvers (see lib/apps/kyc/present.ts)
   idNumber       String
-  /// submitted | in_review | approved | rejected | escalated
-  status         String   @default("submitted")
+  /// Issuing country for passport / other_gov_id
+  idCountry      String?
+  /// Passport expiry, YYYY-MM-DD
+  idExpiry       String?
+  /// submitted | in_review | approved | rejected | escalated | pending_rejection
+  status         String    @default("submitted")
   assignedToId   String?
-  assignedTo     User?    @relation(fields: [assignedToId], references: [id])
+  assignedTo     User?     @relation(fields: [assignedToId], references: [id])
   escalatedById  String?
   vendorCheckId  String?
-  vendorResult   String?
+  /// pass | fail | needs_review
+  identityCheck  String?
+  documentCheck  String?
+  sanctionsCheck String?
+  pepCheck       String?
+  /// 0-100; Low < 40, Medium 40-69, High >= 70
   riskScore      Int?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  /// Latest decision (approve/reject/escalate): reason code + note, who and when
+  decisionReason String?
+  decisionNote   String?
+  decidedById    String?
+  decidedAt      DateTime?
+  approvalRequestId String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([status])
 }
