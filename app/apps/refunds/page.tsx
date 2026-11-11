@@ -16,6 +16,7 @@ import {
   TimeAgo,
   Timeline,
 } from "@/components/shared";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -31,15 +32,17 @@ import {
   REFUND_ENTITY,
   REFUND_REASON_LABELS,
   refundStats,
-  remainingCents,
+  requesterWindowCents,
   type RefundTab,
 } from "@/lib/apps/refunds/service";
+import { REFUND_CONTROLS } from "@/lib/apps/refunds/controls";
 import { getApp } from "@/lib/apps/registry";
 import type { CurrentUser } from "@/lib/platform/auth";
 import { listEntityHistory } from "@/lib/platform/audit";
 import { listUsers } from "@/lib/platform/auth";
 import { getPageAccess } from "@/lib/platform/page";
 import { hasRole } from "@/lib/platform/rbac";
+import { ChargeBalancePanel } from "./ChargeBalancePanel";
 import { NewRefundDialog } from "./NewRefundDialog";
 import { RefundDrawer } from "./RefundDrawer";
 
@@ -63,9 +66,10 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
 
   const sp = await searchParams;
   const current: Record<string, string | undefined> = Object.fromEntries(FILTER_KEYS.map((k) => [k, sp[k]]));
-  const [{ rows, total, counts, tab, page, pageSize, sort }, stats] = await Promise.all([
+  const [{ rows, total, counts, tab, page, pageSize, sort }, stats, myWindowCents] = await Promise.all([
     queryRefunds(prisma, user!, { ...current, page: Number(sp.page) || 1 }),
     refundStats(prisma),
+    requesterWindowCents(prisma, user!.id),
   ]);
   const isApprover = hasRole(user, "approver");
   const tabs = (isApprover ? (Object.keys(TAB_LABELS) as RefundTab[]) : (Object.keys(TAB_LABELS) as RefundTab[]).filter((t) => t !== "mine")).map((t) => ({
@@ -84,7 +88,7 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
     <div>
       <PageHeader
         title="Refunds"
-        description={`Refund a customer against their original charge. Partial refunds are supported; ${formatCents(APPROVAL_THRESHOLD_CENTS)} or more needs a second approver.`}
+        description={`Refund a customer against their original charge. Partial refunds are supported. A second approver signs off on any refund of ${formatCents(REFUND_CONTROLS.singleRefundCents)}+, once a charge's refunds reach ${formatCents(REFUND_CONTROLS.chargeCumulativeCents)}, or once a requester passes ${formatCents(REFUND_CONTROLS.requesterWindowCents)} in ${REFUND_CONTROLS.requesterWindowHours}h.`}
       >
         <Button variant="outline" asChild>
           <a href={hrefWith("/api/apps/refunds/export", current)}>
@@ -93,7 +97,7 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
         </Button>
         {hasRole(user, "reviewer") && (
           <NewRefundDialog
-            thresholdCents={APPROVAL_THRESHOLD_CENTS}
+            requesterWindowCents={myWindowCents}
             reasons={Object.entries(REFUND_REASON_LABELS).map(([value, label]) => ({ value, label }))}
           />
         )}
@@ -102,7 +106,12 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard label="Pending approval" value={stats.pending.count} hint={`${formatCents(stats.pending.cents)} on hold`} href={hrefWith("/apps/refunds", {}, { tab: "pending_approval" })} icon={<Clock />} />
         <StatCard label="Refunded today" value={formatCents(stats.executedToday.cents)} hint={`${stats.executedToday.count} refunds executed`} icon={<CheckCircle2 />} />
-        <StatCard label="Approval threshold" value={formatCents(APPROVAL_THRESHOLD_CENTS)} hint="At or above needs a second approver" icon={<Scale />} />
+        <StatCard
+          label="Approval threshold"
+          value={formatCents(APPROVAL_THRESHOLD_CENTS)}
+          hint={`Per refund or cumulative per charge · ${formatCents(REFUND_CONTROLS.requesterWindowCents)}/${REFUND_CONTROLS.requesterWindowHours}h per requester`}
+          icon={<Scale />}
+        />
       </div>
 
       <Card className="gap-0 py-0">
@@ -155,6 +164,7 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
                 <TableHead>Reason</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Requested by</TableHead>
+                <TableHead>Approved by</TableHead>
                 <TableHead>
                   <Link href={sortLink("oldest", "newest")} className="hover:text-foreground">Created{arrow("oldest", "newest")}</Link>
                 </TableHead>
@@ -171,9 +181,21 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
                   </TableCell>
                   <TableCell className="text-muted-foreground"><CopyText value={r.chargeId} /></TableCell>
                   <TableCell className="text-right font-medium tabular-nums">{formatCents(r.amountCents)}</TableCell>
-                  <TableCell className="text-muted-foreground">{reasonLabel(r.reason)}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <span className="flex items-center gap-2">
+                      {reasonLabel(r.reason)}
+                      {r.reason === "fraudulent" && <FraudBadge />}
+                    </span>
+                  </TableCell>
                   <TableCell><StatusBadge status={r.status} /></TableCell>
                   <TableCell className="text-muted-foreground">{r.requestedBy.name}</TableCell>
+                  <TableCell className="text-muted-foreground" data-testid="approved-by">
+                    {r.approvedBy === "auto" ? (
+                      <span className="font-mono text-xs" title="Executed immediately: under every approval threshold">auto</span>
+                    ) : (
+                      r.approvedBy
+                    )}
+                  </TableCell>
                   <TableCell className="text-muted-foreground"><TimeAgo date={r.createdAt} /></TableCell>
                   <TableCell className="pr-4 text-right">
                     <Button variant="ghost" size="sm" asChild>
@@ -190,6 +212,14 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
 
       {sp.refund && <RefundDetail id={sp.refund} user={user!} closeHref={listHref} />}
     </div>
+  );
+}
+
+function FraudBadge() {
+  return (
+    <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700" data-testid="fraud-flag">
+      Fraud
+    </Badge>
   );
 }
 
@@ -226,6 +256,11 @@ async function RefundDetail({ id, user, closeHref }: { id: string; user: Current
     >
       {pending && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          {refund.approvalReason && (
+            <p className="mb-2 font-medium" data-testid="approval-trigger">
+              {refund.approvalReason}
+            </p>
+          )}
           {own
             ? "You requested this refund, so a different approver must decide it (maker-checker)."
             : canDecide
@@ -259,16 +294,27 @@ async function RefundDetail({ id, user, closeHref }: { id: string; user: Current
         <DetailList
           items={[
             { label: "Amount", value: <span className="font-medium tabular-nums">{money} {refund.currency.toUpperCase()}</span> },
-            { label: "Reason", value: reasonLabel(refund.reason) },
+            {
+              label: "Reason",
+              value: (
+                <span className="flex items-center gap-2">
+                  {reasonLabel(refund.reason)}
+                  {refund.reason === "fraudulent" && <FraudBadge />}
+                </span>
+              ),
+            },
             { label: "Internal note", value: refund.note },
             { label: "Requested by", value: refund.requestedBy.name },
             { label: "Provider refund ID", value: refund.providerRefundId ? <CopyText value={refund.providerRefundId} /> : null },
             ...(approval
               ? [
                   { label: "Approval", value: <StatusBadge status={approval.status} /> },
+                  ...(!pending && refund.approvalReason ? [{ label: "Why approval", value: refund.approvalReason.replace(/^Needs approval: /, "") }] : []),
                   { label: "Decided by", value: approval.approvedBy?.name ?? approval.rejectedBy?.name ?? null },
                   ...(approval.status === "rejected" ? [{ label: "Rejection reason", value: approval.decisionNote }] : []),
                 ]
+              : refund.status === "executed"
+              ? [{ label: "Approved by", value: <span className="font-mono text-xs">auto</span> }]
               : []),
             { label: "Idempotency key", value: <CopyText value={refund.idempotencyKey} className="text-muted-foreground" /> },
           ]}
@@ -277,25 +323,13 @@ async function RefundDetail({ id, user, closeHref }: { id: string; user: Current
 
       <section>
         <h3 className="mb-2 text-sm font-semibold">Original charge</h3>
-        <div className="mb-3 grid grid-cols-3 divide-x rounded-lg border bg-muted/40 text-center">
-          {[
-            ["Original", charge.amountCents],
-            ["Refunded", charge.amountRefundedCents],
-            ["Remaining", remainingCents(charge)],
-          ].map(([label, cents]) => (
-            <div key={label} className="px-3 py-2.5">
-              <div className="text-xs text-muted-foreground">{label}</div>
-              <div className="text-sm font-semibold tabular-nums">{formatCents(cents as number)}</div>
-            </div>
-          ))}
-        </div>
+        <ChargeBalancePanel charge={charge} />
         <DetailList
           items={[
             { label: "Charge ID", value: <CopyText value={charge.id} /> },
             { label: "Customer", value: <Person name={charge.customerName} sub={charge.customerEmail} /> },
             { label: "Description", value: charge.description },
             { label: "Charged", value: formatDate(charge.createdAt) },
-            ...(charge.amountPendingCents > 0 ? [{ label: "On hold", value: <span className="tabular-nums">{formatCents(charge.amountPendingCents)} pending approval</span> }] : []),
           ]}
         />
       </section>

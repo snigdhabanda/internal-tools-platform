@@ -27,7 +27,7 @@ Open http://localhost:3000 and pick a user from the user menu in the top right.
 | --- | --- | --- |
 | Alice Chen | reviewer | Request refunds (search a charge by email or `ch_` ID), claim and work KYC cases. Sees masked ID numbers, DOBs and street addresses. |
 | Bob Martinez | reviewer | A second maker. |
-| Carol Okafor | approver | Work the **Approvals** inbox (anything waiting over 24h is highlighted), approve or reject $500+ refunds (rejecting needs a reason), resolve escalated KYC cases and sign off on rejections of all-clear cases. Sees full PII. |
+| Carol Okafor | approver | Work the **Approvals** inbox (anything waiting over 24h is highlighted), approve or reject refunds that hit an approval rule (rejecting needs a reason), resolve escalated KYC cases and sign off on rejections of all-clear cases. Sees full PII. |
 | Dave Singh | approver | A second checker. |
 | Frank Weber | reviewer, approver | Request a $600 refund, then see that you **cannot** approve it yourself. |
 | Erin Park | admin | The `/audit` page. Admin is *not* a superuser, so Erin sees masked PII and can't approve. |
@@ -61,7 +61,9 @@ tests/               Vitest, incl. guardrails.test.ts
 2. `createApprovalRequest()` plus an `ApprovalHandler` registered in their manifest. The platform enforces *approver ≠ requester*, the approver role, and decide-exactly-once. The app only says what happens on approve or reject. One `/api/approvals/:id` endpoint and one `/approvals` inbox serve every app.
 3. An `AppManifest` entry in `lib/apps/registry.ts`, which drives the left nav, the dashboard, and the audit page's app filter.
 
-**Refunds.** A `Charge` table (stubbed processor charges) is the source of truth: a refund is created from a charge, the customer comes from the charge, and the server holds the amount against the charge's remaining balance with a single conditional `UPDATE`, so over-refunds are rejected even under concurrent requests. Partial refunds add up; a refund awaiting approval holds its amount until it's approved (moved to refunded) or rejected (released). Requests carry a reason code plus an optional internal note, and every money action asks for confirmation with the amount and recipient.
+**Refunds.** A `Charge` table (stubbed processor charges) is the source of truth: a refund is created from a charge, the customer comes from the charge, and the server holds the amount against the charge's remaining balance with a single conditional `UPDATE`, so over-refunds are rejected even under concurrent requests. Partial refunds add up; a refund awaiting approval holds its amount until it's approved (moved to refunded) or rejected (released). Requests carry a reason code plus an internal note (required for `fraudulent`, which also flags the row), and every money action asks for confirmation with the amount and recipient.
+
+**Refund approval controls** (`lib/apps/refunds/controls.ts`, config in `REFUND_CONTROLS`). A refund goes to maker-checker approval if any rule triggers: (a) it is $500 or more; (b) executed + pending refunds on the same charge, including this one, reach $500, which catches a large refund split into smaller ones; (c) the requester's refunds in the last 24h, including this one, reach $2,000. The server evaluates the rules inside the same transaction that reserves the balance, stores the triggering rule on the refund, and the drawer shows it ("Needs approval: cumulative refunds on this charge exceed $500.00"). Refunds that executed without approval show `auto` under Approved by.
 
 **How the rules are enforced:**
 

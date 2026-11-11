@@ -5,12 +5,13 @@ import type { Db } from "@/lib/db";
 import { payments } from "@/lib/integrations/payments";
 import { createApprovalRequest, type ApprovalHandler } from "@/lib/platform/approvals";
 import { audit } from "@/lib/platform/audit";
+import { approvalSentence, approvalTriggers, COUNTED_REFUND_STATUSES, REFUND_CONTROLS } from "./controls";
 import type { CurrentUser } from "@/lib/platform/auth";
 import { BadRequestError, ConflictError, NotFoundError } from "@/lib/platform/errors";
 
 export const REFUND_ENTITY = "Refund";
-/** Refunds at or above this amount need maker-checker approval. */
-export const APPROVAL_THRESHOLD_CENTS = 500_00;
+/** A single refund at or above this amount needs maker-checker approval (see REFUND_CONTROLS for all rules). */
+export const APPROVAL_THRESHOLD_CENTS = REFUND_CONTROLS.singleRefundCents;
 
 export const REFUND_REASONS = ["duplicate", "fraudulent", "requested_by_customer", "service_not_delivered", "goodwill"] as const;
 export type RefundReason = (typeof REFUND_REASONS)[number];
@@ -29,7 +30,7 @@ export const requestRefundSchema = z.object({
   amount: z.number().positive().max(100_000).multipleOf(0.01),
   reason: z.enum(REFUND_REASONS),
   note: z.string().trim().max(500).optional().transform((v) => v || null),
-});
+}).refine((r) => r.reason !== "fraudulent" || !!r.note, { message: "An internal note is required for fraudulent refunds", path: ["note"] });
 export type RequestRefundInput = z.infer<typeof requestRefundSchema>;
 
 export const IDEMPOTENCY_HEADER = "Idempotency-Key";
@@ -131,6 +132,16 @@ async function executeRefund(tx: Db, refund: Refund, actorId: string, before: Re
   return after;
 }
 
+/** The requester's refunds within the rolling window that moved or hold money. */
+export async function requesterWindowCents(db: Db, userId: string, now = new Date()) {
+  const since = new Date(now.getTime() - REFUND_CONTROLS.requesterWindowHours * 3_600_000);
+  const { _sum } = await db.refund.aggregate({
+    where: { requestedById: userId, createdAt: { gte: since }, status: { in: COUNTED_REFUND_STATUSES } },
+    _sum: { amountCents: true },
+  });
+  return _sum.amountCents ?? 0;
+}
+
 /**
  * Step 1: hold the amount against the charge's remaining balance and persist the refund request.
  * The route audits "refund.requested" right after this.
@@ -138,6 +149,15 @@ async function executeRefund(tx: Db, refund: Refund, actorId: string, before: Re
 export async function createRefund(tx: Db, user: CurrentUser, input: RequestRefundInput, idempotencyKey: string) {
   const amountCents = Math.round(input.amount * 100);
   const charge = await reserveBalance(tx, input.chargeId, amountCents);
+  // Read after the reservation: this transaction now holds SQLite's write lock, so no concurrent
+  // request can change these totals until we commit (no split-refund race past the rules).
+  const held = await tx.charge.findUniqueOrThrow({ where: { id: charge.id } });
+  const triggers = approvalTriggers({
+    amountCents,
+    chargeRefundedCents: held.amountRefundedCents,
+    chargePendingCents: held.amountPendingCents - amountCents,
+    requesterWindowCents: await requesterWindowCents(tx, user.id),
+  });
   return tx.refund.create({
     data: {
       idempotencyKey,
@@ -148,7 +168,9 @@ export async function createRefund(tx: Db, user: CurrentUser, input: RequestRefu
       amountCents,
       reason: input.reason,
       note: input.note,
-      status: amountCents >= APPROVAL_THRESHOLD_CENTS ? "pending_approval" : "processing",
+      status: triggers.length ? "pending_approval" : "processing",
+      approvalRule: triggers.length ? triggers.map((t) => t.rule).join(",") : null,
+      approvalReason: approvalSentence(triggers),
       requestedById: user.id,
     },
   });
@@ -336,14 +358,30 @@ export async function queryRefunds(db: Db, user: CurrentUser, query: RefundQuery
     ...REFUND_TABS.map((t) => db.refund.count({ where: { AND: [filters, tabWhere(t, user)] } })),
   ]);
   const counts = Object.fromEntries(REFUND_TABS.map((t, i) => [t, tabCounts[i]])) as Record<RefundTab, number>;
-  return { rows, total, counts, tab, page, pageSize, sort };
+  return { rows: await withApprover(db, rows), total, counts, tab, page, pageSize, sort };
 }
 
 /** All refunds matching the list filters (no pagination), for CSV export. */
 export async function exportRefunds(db: Db, user: CurrentUser, query: RefundQuery) {
   const tab = resolveTab(query.tab, user);
   const sort = (REFUND_SORTS as readonly string[]).includes(query.sort ?? "") ? (query.sort as RefundSort) : "newest";
-  return db.refund.findMany({ where: { AND: [filterWhere(query), tabWhere(tab, user)] }, include: { requestedBy: true }, orderBy: ORDER[sort] });
+  return withApprover(db, await db.refund.findMany({ where: { AND: [filterWhere(query), tabWhere(tab, user)] }, include: { requestedBy: true }, orderBy: ORDER[sort] }));
+}
+
+/**
+ * "Approved by" for list rows: the checker's name, "auto" for refunds that executed without
+ * approval (under every threshold), or null when nobody has approved it (pending/rejected).
+ */
+export async function withApprover<T extends Refund>(db: Db, rows: T[]) {
+  const ids = rows.flatMap((r) => (r.approvalRequestId ? [r.approvalRequestId] : []));
+  const approvals = ids.length
+    ? await db.approvalRequest.findMany({ where: { id: { in: ids }, status: "approved" }, select: { id: true, approvedBy: { select: { name: true } } } })
+    : [];
+  const names = new Map(approvals.map((a) => [a.id, a.approvedBy?.name ?? null]));
+  return rows.map((r) => ({
+    ...r,
+    approvedBy: r.approvalRequestId ? (names.get(r.approvalRequestId) ?? null) : r.status === "executed" ? "auto" : null,
+  }));
 }
 
 export async function getRefund(db: Db, id: string) {

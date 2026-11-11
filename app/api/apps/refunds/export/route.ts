@@ -20,7 +20,7 @@ export const GET = route(async (req) => {
 
   return csvResponse(
     "refunds",
-    ["id", "created_at", "customer_name", "customer_email", "charge_id", "amount", "currency", "reason", "note", "status", "requested_by", "provider_refund_id"],
-    rows.map((r) => [r.id, r.createdAt.toISOString(), r.customerName, r.customerEmail, r.chargeId, (r.amountCents / 100).toFixed(2), r.currency, reasonLabel(r.reason), r.note, r.status, r.requestedBy.name, r.providerRefundId]),
+    ["id", "created_at", "customer_name", "customer_email", "charge_id", "amount", "currency", "reason", "note", "status", "requested_by", "approved_by", "approval_rule", "provider_refund_id"],
+    rows.map((r) => [r.id, r.createdAt.toISOString(), r.customerName, r.customerEmail, r.chargeId, (r.amountCents / 100).toFixed(2), r.currency, reasonLabel(r.reason), r.note, r.status, r.requestedBy.name, r.approvedBy, r.approvalRule, r.providerRefundId]),
   );
 });
