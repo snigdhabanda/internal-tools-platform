@@ -38,6 +38,7 @@ CREATE TABLE "new_KycCase" (
 -- Backfill pre-CIP rows. US residents become US persons identified by their SSN (TIN); everyone
 -- else keeps their passport/ID number with the residence country as issuing country, and their SSN
 -- is dropped (non-US persons must not carry one). Addresses were never captured, so they're marked.
+-- A legacy "consider" result doesn't say which check flagged, so all four become needs_review.
 INSERT INTO "new_KycCase" (
     "id", "applicantName", "email", "dateOfBirth", "addressLine1", "city", "region", "postalCode", "country", "isUSPerson",
     "idType", "idNumber", "idCountry", "status", "assignedToId", "escalatedById", "vendorCheckId",
@@ -48,10 +49,10 @@ SELECT
     CASE WHEN "country" = 'US' THEN "ssn" ELSE "idNumber" END,
     CASE WHEN "country" = 'US' THEN NULL ELSE "country" END,
     "status", "assignedToId", "escalatedById", "vendorCheckId",
-    CASE WHEN "vendorResult" IS NULL THEN NULL ELSE 'pass' END,
     CASE "vendorResult" WHEN 'clear' THEN 'pass' WHEN 'consider' THEN 'needs_review' END,
-    CASE WHEN "vendorResult" IS NULL THEN NULL ELSE 'pass' END,
-    CASE WHEN "vendorResult" IS NULL THEN NULL ELSE 'pass' END,
+    CASE "vendorResult" WHEN 'clear' THEN 'pass' WHEN 'consider' THEN 'needs_review' END,
+    CASE "vendorResult" WHEN 'clear' THEN 'pass' WHEN 'consider' THEN 'needs_review' END,
+    CASE "vendorResult" WHEN 'clear' THEN 'pass' WHEN 'consider' THEN 'needs_review' END,
     "riskScore", "createdAt", "updatedAt"
 FROM "KycCase";
 DROP TABLE "KycCase";
