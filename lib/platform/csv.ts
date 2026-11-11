@@ -1,7 +1,8 @@
 /** Quote every cell and neutralize spreadsheet formulas (=, +, -, @) so exports can't execute in Excel. */
 export function csvCell(v: unknown) {
   const s = v == null ? "" : String(v);
-  return `"${(/^[=+\-@\t\r]/.test(s) ? `'${s}` : s).replace(/"/g, '""')}"`;
+  // Leading whitespace too: some importers trim it and would then evaluate the formula.
+  return `"${(/^\s*[=+\-@]/.test(s) || /^[\t\r]/.test(s) ? `'${s}` : s).replace(/"/g, '""')}"`;
 }
 
 export function csvResponse(name: string, header: string[], rows: unknown[][]) {
