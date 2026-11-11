@@ -342,7 +342,8 @@ export async function queryRefunds(db: Db, user: CurrentUser, query: RefundQuery
 /** All refunds matching the list filters (no pagination), for CSV export. */
 export async function exportRefunds(db: Db, user: CurrentUser, query: RefundQuery) {
   const tab = resolveTab(query.tab, user);
-  return db.refund.findMany({ where: { AND: [filterWhere(query), tabWhere(tab, user)] }, include: { requestedBy: true }, orderBy: { createdAt: "desc" } });
+  const sort = (REFUND_SORTS as readonly string[]).includes(query.sort ?? "") ? (query.sort as RefundSort) : "newest";
+  return db.refund.findMany({ where: { AND: [filterWhere(query), tabWhere(tab, user)] }, include: { requestedBy: true }, orderBy: ORDER[sort] });
 }
 
 export async function getRefund(db: Db, id: string) {

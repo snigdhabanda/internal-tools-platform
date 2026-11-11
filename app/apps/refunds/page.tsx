@@ -87,7 +87,7 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
         description={`Refund a customer against their original charge. Partial refunds are supported; ${formatCents(APPROVAL_THRESHOLD_CENTS)} or more needs a second approver.`}
       >
         <Button variant="outline" asChild>
-          <a href={hrefWith("/api/apps/refunds/export", { ...current, sort: undefined })}>
+          <a href={hrefWith("/api/apps/refunds/export", current)}>
             <Download /> Export CSV
           </a>
         </Button>

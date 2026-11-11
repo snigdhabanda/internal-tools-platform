@@ -6,7 +6,7 @@ import { csvResponse } from "@/lib/platform/csv";
 import { route } from "@/lib/platform/http";
 import { requireRole } from "@/lib/platform/rbac";
 
-const FILTERS = ["tab", "q", "min", "max", "from", "to"] as const;
+const FILTERS = ["tab", "q", "min", "max", "from", "to", "sort"] as const;
 
 /** CSV export of refunds matching the list filters. Exports contain customer PII, so each one is audited. */
 export const GET = route(async (req) => {
