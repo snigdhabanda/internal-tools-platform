@@ -42,7 +42,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavSection title="Platform" items={PLATFORM_NAV} roles={roles} />
             {!user && <p className="px-3 text-xs text-slate-500">Choose a user in the header to see apps.</p>}
           </nav>
-          <main className="flex-1 p-8">{children}</main>
+          {/* Keyed by user so client state (inline errors, half-filled forms) resets on user switch. */}
+          <main key={user?.id ?? "anonymous"} className="flex-1 p-8">
+            {children}
+          </main>
         </div>
       </body>
     </html>
