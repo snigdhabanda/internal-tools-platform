@@ -101,7 +101,7 @@
 
   --popover-foreground: oklch(0.145 0 0);
 
-  --primary: oklch(0.205 0 0);
+  --primary: oklch(0.511 0.262 276.966); /* the single accent (indigo-600) */
 
   --primary-foreground: oklch(0.985 0 0);
 
@@ -123,7 +123,7 @@
 
   --input: oklch(0.922 0 0);
 
-  --ring: oklch(0.708 0 0);
+  --ring: oklch(0.585 0.233 277.117);
 
   --chart-1: oklch(0.87 0 0);
 

@@ -224,7 +224,7 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
             <div className="grid grid-cols-3 divide-x rounded-lg border bg-muted/40 text-center">
               {[
                 ["Original charge", charge.amountCents],
-                ["Already refunded", charge.amountRefundedCents + charge.amountPendingCents],
+                ["Already refunded", charge.amountRefundedCents],
                 ["Remaining", charge.remainingCents],
               ].map(([label, cents]) => (
                 <div key={label} className="px-3 py-3">

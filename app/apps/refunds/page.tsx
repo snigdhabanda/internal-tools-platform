@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, Download, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, Download, Scale } from "lucide-react";
 import Link from "next/link";
 import { ActionButton } from "@/components/ActionButton";
 import { CopyText } from "@/components/CopyButton";
@@ -102,7 +102,7 @@ export default async function RefundsPage({ searchParams }: { searchParams: Sear
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard label="Pending approval" value={stats.pending.count} hint={`${formatCents(stats.pending.cents)} on hold`} href={hrefWith("/apps/refunds", {}, { tab: "pending_approval" })} icon={<Clock />} />
         <StatCard label="Refunded today" value={formatCents(stats.executedToday.cents)} hint={`${stats.executedToday.count} refunds executed`} icon={<CheckCircle2 />} />
-        <StatCard label="Approval threshold" value={formatCents(APPROVAL_THRESHOLD_CENTS)} hint="At or above needs a second approver" icon={<XCircle />} />
+        <StatCard label="Approval threshold" value={formatCents(APPROVAL_THRESHOLD_CENTS)} hint="At or above needs a second approver" icon={<Scale />} />
       </div>
 
       <Card className="gap-0 py-0">

@@ -61,7 +61,7 @@ export function StatCard({
 }) {
   const body = (
     <Card className={cn("h-full gap-0 py-0 transition-shadow", href && "hover:shadow-md", tone === "warning" && "ring-amber-300")}>
-      <CardContent className="flex items-start justify-between gap-3 p-5">
+      <CardContent className="flex flex-row items-start justify-between gap-3 p-5">
         <div>
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
@@ -180,7 +180,7 @@ export function hrefWith(base: string, current: Record<string, string | undefine
 /** URL-driven tabs (server-rendered links styled like shadcn Tabs). */
 export function LinkTabs({ tabs, active }: { tabs: { key: string; label: string; count?: number; href: string; highlight?: boolean }[]; active: string }) {
   return (
-    <div className="flex gap-1 overflow-x-auto border-b px-4" role="tablist">
+    <div className="flex gap-1 overflow-x-auto overflow-y-hidden border-b px-4" role="tablist">
       {tabs.map((t) => {
         const on = t.key === active;
         return (

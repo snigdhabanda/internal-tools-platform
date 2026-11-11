@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  devIndicators: false,
   webpack(config, { dev }) {
     if (dev) {
       // SQLite writes to prisma/*.db would otherwise trigger a recompile on every request

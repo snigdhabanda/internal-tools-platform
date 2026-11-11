@@ -1,6 +1,6 @@
 # Internal Tools Platform (prototype)
 
-A code-first replacement for the Microsoft Power Apps setup our ops, compliance, and support teams use today. Power Apps gives us a shared platform layer (identity and roles, an audit trail, approvals, data access), and we want 10+ more internal apps on top of it. This repo builds that layer **once, in code, with tests that enforce it**, and puts two real apps on it: a **Refunds dashboard** with maker-checker approvals and a **KYC review queue** with a server-enforced state machine and PII masking. New apps follow [`docs/NEW_APP_PLAYBOOK.md`](docs/NEW_APP_PLAYBOOK.md), and CI guardrails fail any API route that skips authorization or auditing.
+A code-first replacement for the Microsoft Power Apps setup our ops, compliance, and support teams use today. Power Apps gives us a shared platform layer (identity and roles, an audit trail, approvals, data access), and we want 10+ more internal apps on top of it. This repo builds that layer **once, in code, with tests that enforce it**, and puts two real apps on it: a **Refunds** app (charge lookup, partial refunds with server-enforced balances, maker-checker approvals) and a **KYC review queue** with a server-enforced state machine and PII masking. New apps follow [`docs/NEW_APP_PLAYBOOK.md`](docs/NEW_APP_PLAYBOOK.md), and CI guardrails fail any API route that skips authorization or auditing.
 
 ## Run it
 
@@ -10,7 +10,7 @@ Requires Node 20+.
 npm install && npm run db:seed && npm run dev
 ```
 
-Open http://localhost:3000 and pick a user from the **Signed in as** switcher in the header.
+Open http://localhost:3000 and pick a user from the user menu in the top right.
 
 `npm run db:seed` deletes `prisma/dev.db`, applies the migrations, and loads fake data. Re-run it at any time to start fresh.
 
@@ -25,14 +25,14 @@ Open http://localhost:3000 and pick a user from the **Signed in as** switcher in
 
 | User | Roles | Try this |
 | --- | --- | --- |
-| Alice Chen | reviewer | Request refunds, claim and work KYC cases. Sees masked SSNs. |
+| Alice Chen | reviewer | Request refunds (search a charge by email or `ch_` ID), claim and work KYC cases. Sees masked SSNs. |
 | Bob Martinez | reviewer | A second maker. |
-| Carol Okafor | approver | Approve or reject $500+ refunds, resolve escalated KYC cases. Sees full SSNs. |
+| Carol Okafor | approver | Work the **Approvals** inbox (anything waiting over 24h is highlighted), approve or reject $500+ refunds (rejecting needs a reason), resolve escalated KYC cases. Sees full SSNs. |
 | Dave Singh | approver | A second checker. |
 | Frank Weber | reviewer, approver | Request a $600 refund, then see that you **cannot** approve it yourself. |
 | Erin Park | admin | The `/audit` page. Admin is *not* a superuser, so Erin sees masked PII and can't approve. |
 
-**Acceptance walkthrough:** as Frank, request a $600 refund. Click Approve and you get a maker-checker error. Switch to Carol, approve it, and it executes. Switch to Erin and open `/audit` to see `refund.requested`, `approval.requested`, `approval.approved`, and `refund.executed`. On `/apps/kyc`, Alice sees `•••-••-1234` and Carol sees the full SSN.
+**Acceptance walkthrough:** as Frank, click **New refund**, search `@` for a charge with at least $600 refundable, and request a $600 (partial) refund. Click Approve and you get a maker-checker error. Switch to Carol, approve it, and it executes. Switch to Erin and open `/audit` to see `refund.requested`, `approval.requested`, `approval.approved`, and `refund.executed`. On `/apps/kyc`, Alice sees `•••-••-1234` and Carol sees the full SSN.
 
 ## Architecture
 
@@ -49,7 +49,9 @@ lib/apps/<id>/       APP CODE: service.ts (logic), manifest.ts (nav + approval h
 lib/apps/registry.ts the one place apps are registered (nav, home, approval routing)
 app/api/...          thin route handlers: requireRole -> validate -> $transaction(service + audit)
 app/apps/<id>/       app pages (server components; masking happens before render)
-app/audit, app/approvals   platform pages
+app/audit, app/approvals, app/page.tsx   platform pages (audit log, approvals inbox, dashboard)
+components/ui/       shadcn/ui primitives (Button, Table, Dialog, Sheet, Select, sonner toasts...)
+components/shared.tsx  platform page building blocks (PageHeader, StatCard, StatusBadge, Timeline, Pagination...)
 tests/               Vitest, incl. guardrails.test.ts
 ```
 
@@ -57,7 +59,9 @@ tests/               Vitest, incl. guardrails.test.ts
 
 1. `requireRole()` + `audit()` called from their route handlers.
 2. `createApprovalRequest()` plus an `ApprovalHandler` registered in their manifest. The platform enforces *approver ≠ requester*, the approver role, and decide-exactly-once. The app only says what happens on approve or reject. One `/api/approvals/:id` endpoint and one `/approvals` inbox serve every app.
-3. An `AppManifest` entry in `lib/apps/registry.ts`, which drives the left nav and home page.
+3. An `AppManifest` entry in `lib/apps/registry.ts`, which drives the left nav, the dashboard, and the audit page's app filter.
+
+**Refunds.** A `Charge` table (stubbed processor charges) is the source of truth: a refund is created from a charge, the customer comes from the charge, and the server holds the amount against the charge's remaining balance with a single conditional `UPDATE`, so over-refunds are rejected even under concurrent requests. Partial refunds add up; a refund awaiting approval holds its amount until it's approved (moved to refunded) or rejected (released). Requests carry a reason code plus an optional internal note, and every money action asks for confirmation with the amount and recipient.
 
 **How the rules are enforced:**
 
@@ -73,4 +77,4 @@ tests/               Vitest, incl. guardrails.test.ts
 - **Real integrations.** `lib/integrations/payments.ts` and `kyc.ts` are in-memory stubs that always succeed. Real clients need retries, timeouts, webhooks/reconciliation, and an outbox pattern so external calls aren't made inside DB transactions.
 - **Deployment.** SQLite and `next dev` only. Production needs Postgres, migrations in CI/CD, environments, backups, observability (logs/metrics/tracing), and rate limiting.
 - **Secrets management.** None needed yet. `.env` holds only a local SQLite path. Real API keys must come from a secrets manager (AWS Secrets Manager / Vault), never from the repo.
-- Also: no CSRF tokens beyond `SameSite=Lax` cookies, no pagination, no field-level access logging (who viewed unmasked PII), and PII is stored in plaintext rather than with field-level encryption or tokenization.
+- Also: no CSRF tokens beyond `SameSite=Lax` cookies, no field-level access logging (who viewed unmasked PII), and PII is stored in plaintext rather than with field-level encryption or tokenization.

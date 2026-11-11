@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 export function CopyText({ value, className }: { value: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <span className={cn("inline-flex min-w-0 items-center gap-1.5 font-mono text-xs", className)}>
+    <span className={cn("inline-flex min-w-0 max-w-full items-center gap-1.5 font-mono text-xs", className)}>
       <span className="truncate">{value}</span>
       <button
         type="button"
