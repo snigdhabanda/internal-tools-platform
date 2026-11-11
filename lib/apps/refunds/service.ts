@@ -130,7 +130,10 @@ export async function replayRefund(
   if (
     existing.requestedById !== user.id ||
     existing.chargeId !== input.chargeId ||
-    existing.amountCents !== Math.round(input.amount * 100)
+    existing.amountCents !== Math.round(input.amount * 100) ||
+    existing.customerName !== input.customerName ||
+    existing.customerEmail !== input.customerEmail ||
+    existing.reason !== input.reason
   ) {
     throw new ConflictError(`${IDEMPOTENCY_HEADER} was already used for a different refund request`);
   }

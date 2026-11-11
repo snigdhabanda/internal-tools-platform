@@ -168,6 +168,11 @@ describe("refunds app", () => {
       const key = randomUUID();
       await requestRefund(30, "reviewer", key);
       expect((await requestRefund(31, "reviewer", key)).res.status).toBe(409);
+      const editedReason = await refundsPOST(
+        req("POST", "/api/apps/refunds", { as: "reviewer", body: { ...body(30), reason: "Edited reason" }, headers: { "Idempotency-Key": key } }),
+        undefined,
+      );
+      expect(editedReason.status).toBe(409);
       expect((await requestRefund(30, "reviewer2", key)).res.status).toBe(409);
     });
 
