@@ -68,14 +68,39 @@ model ApprovalRequest {
 
 // ---------- App: Refunds ----------
 
+/// Mirror of the payment processor's charges (stubbed Stripe). The source of truth for what can be refunded.
+model Charge {
+  /// Processor charge id, e.g. ch_3PqRsT9uVwXyZ1
+  id                  String   @id
+  customerName        String
+  customerEmail       String
+  description         String
+  amountCents         Int
+  currency            String   @default("usd")
+  /// Sum of executed refunds.
+  amountRefundedCents Int      @default(0)
+  /// Held by refunds awaiting approval or in flight, so concurrent requests can't over-refund.
+  amountPendingCents  Int      @default(0)
+  createdAt           DateTime @default(now())
+  refunds             Refund[]
+
+  @@index([customerEmail])
+}
+
 model Refund {
   id                String   @id @default(cuid())
+  /// Copied from the charge when the refund is requested.
   customerName      String
+  /// Copied from the charge when the refund is requested.
   customerEmail     String
   chargeId          String
+  charge            Charge   @relation(fields: [chargeId], references: [id])
   amountCents       Int
   currency          String   @default("usd")
+  /// Reason code: duplicate | fraudulent | requested_by_customer | service_not_delivered | goodwill
   reason            String
+  /// Optional internal note from the requester (not sent to the processor).
+  note              String?
   /// processing | pending_approval | executed | rejected | failed
   status            String
   requestedById     String
@@ -88,6 +113,7 @@ model Refund {
   updatedAt         DateTime @updatedAt
 
   @@index([status])
+  @@index([chargeId])
 }
 
 // ---------- App: KYC review queue ----------

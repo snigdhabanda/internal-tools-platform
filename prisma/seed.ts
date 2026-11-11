@@ -1,5 +1,5 @@
 import { faker } from "@faker-js/faker";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Charge } from "@prisma/client";
 
 const prisma = new PrismaClient();
 faker.seed(20261111);
@@ -20,21 +20,35 @@ const USERS = [
   { id: "u_erin", name: "Erin Park", email: "erin@fintech.example", roles: "admin" },
 ];
 
-const REFUND_REASONS = [
-  "Duplicate charge",
-  "Service not delivered",
-  "Customer cancelled within trial",
-  "Fraudulent transaction reported",
-  "Billing error: wrong plan tier",
-  "Goodwill credit after outage",
-  "Chargeback pre-emption",
+const REFUND_REASONS = ["duplicate", "fraudulent", "requested_by_customer", "service_not_delivered", "goodwill"] as const;
+const NOTES = [
+  "Customer emailed support twice about this.",
+  "Confirmed with billing: plan was downgraded mid-cycle.",
+  "Charged twice by retry logic during the outage.",
+  null,
+  null,
 ];
+const PRODUCTS = [
+  ["Pro plan · monthly", 49_00, 99_00],
+  ["Pro plan · annual", 480_00, 1_188_00],
+  ["Business plan · annual", 2_400_00, 4_800_00],
+  ["Card issuance fee", 15_00, 45_00],
+  ["Wire transfer fee", 25_00, 75_00],
+  ["Invoice payment", 150_00, 2_500_00],
+  ["Add-on: extra seats", 60_00, 600_00],
+] as const;
 
 // Area numbers 900-999 are never issued by the SSA, so these can't collide with real SSNs.
 const fakeSsn = () =>
   `${faker.number.int({ min: 900, max: 999 })}-${faker.string.numeric(2)}-${faker.string.numeric(4)}`;
 
 const SYSTEM = "system:seed";
+const HOUR = 3_600_000;
+const now = new Date();
+const ago = (ms: number) => new Date(now.getTime() - ms);
+const chargeId = () => `ch_${faker.string.alphanumeric(14)}`;
+
+type RefundRow = Awaited<ReturnType<typeof prisma.refund.create>>;
 
 // Mirrors refundAuditSnapshot: customer details stay out of the audit log.
 function withoutCustomer<T extends { customerName: string; customerEmail: string }>(row: T): Partial<T> {
@@ -44,66 +58,174 @@ function withoutCustomer<T extends { customerName: string; customerEmail: string
   return snapshot;
 }
 
-async function seedAudit(entityType: string, entityId: string, after: unknown, at: Date) {
+async function log(actorId: string, action: string, entityType: string, entityId: string, at: Date, after: unknown, before?: unknown) {
   await prisma.auditLog.create({
-    data: { actorId: SYSTEM, action: "seed.created", entityType, entityId, after: JSON.stringify(after), timestamp: at },
+    data: { actorId, action, entityType, entityId, before: before ? JSON.stringify(before) : null, after: JSON.stringify(after), timestamp: at },
   });
+}
+
+/**
+ * Creates a refund against a charge with a realistic audit trail (the same events the API writes),
+ * and keeps the charge's refunded/pending balances consistent.
+ */
+async function seedRefund(opts: {
+  charge: { id: string; customerName: string; customerEmail: string };
+  amountCents: number;
+  requestedById: string;
+  at: Date;
+  outcome: "executed" | "pending_approval" | "rejected";
+  approverId?: string;
+  rejectionReason?: string;
+  reason?: (typeof REFUND_REASONS)[number];
+}) {
+  const needsApproval = opts.amountCents >= 500_00;
+  const decidedAt = new Date(opts.at.getTime() + faker.number.int({ min: 1, max: 6 }) * HOUR);
+  const created = await prisma.refund.create({
+    data: {
+      idempotencyKey: faker.string.uuid(),
+      customerName: opts.charge.customerName,
+      customerEmail: opts.charge.customerEmail,
+      chargeId: opts.charge.id,
+      amountCents: opts.amountCents,
+      reason: opts.reason ?? faker.helpers.arrayElement(REFUND_REASONS),
+      note: faker.helpers.arrayElement(NOTES),
+      status: needsApproval ? "pending_approval" : "processing",
+      requestedById: opts.requestedById,
+      createdAt: opts.at,
+    },
+  });
+  await log(opts.requestedById, "refund.requested", "Refund", created.id, opts.at, withoutCustomer(created));
+  let refund: RefundRow = created;
+
+  if (needsApproval) {
+    const approval = await prisma.approvalRequest.create({
+      data: {
+        entityType: "Refund",
+        entityId: created.id,
+        requestedById: opts.requestedById,
+        payload: JSON.stringify({ refundId: created.id, chargeId: created.chargeId, amountCents: created.amountCents, currency: "usd", customerName: created.customerName }),
+        createdAt: opts.at,
+      },
+    });
+    await log(opts.requestedById, "approval.requested", "ApprovalRequest", approval.id, opts.at, approval);
+    refund = await prisma.refund.update({ where: { id: created.id }, data: { approvalRequestId: approval.id } });
+
+    if (opts.outcome !== "pending_approval") {
+      const approved = opts.outcome === "executed";
+      const decided = await prisma.approvalRequest.update({
+        where: { id: approval.id },
+        data: {
+          status: approved ? "approved" : "rejected",
+          approvedById: approved ? opts.approverId : null,
+          rejectedById: approved ? null : opts.approverId,
+          decisionNote: approved ? null : opts.rejectionReason,
+          decidedAt,
+          updatedAt: decidedAt,
+        },
+      });
+      await log(opts.approverId!, `approval.${decided.status}`, "ApprovalRequest", approval.id, decidedAt, decided, approval);
+    }
+  }
+
+  if (opts.outcome === "pending_approval") {
+    await prisma.charge.update({ where: { id: opts.charge.id }, data: { amountPendingCents: { increment: opts.amountCents } } });
+    return refund;
+  }
+  const actor = needsApproval ? opts.approverId! : opts.requestedById;
+  const at = needsApproval ? decidedAt : opts.at;
+  const before = refund;
+  refund = await prisma.refund.update({
+    where: { id: created.id },
+    data:
+      opts.outcome === "executed"
+        ? { status: "executed", providerRefundId: `re_${faker.string.alphanumeric(14)}`, updatedAt: at }
+        : { status: "rejected", updatedAt: at },
+  });
+  await log(actor, `refund.${refund.status}`, "Refund", created.id, at, withoutCustomer(refund), withoutCustomer(before));
+  if (opts.outcome === "executed") {
+    await prisma.charge.update({ where: { id: opts.charge.id }, data: { amountRefundedCents: { increment: opts.amountCents } } });
+  }
+  return refund;
 }
 
 async function main() {
   for (const u of USERS) await prisma.user.create({ data: u });
 
   const reviewers = ["u_alice", "u_bob", "u_frank"];
+  const approvers = ["u_carol", "u_dave"];
 
+  // ---- Charges: the payment processor's record of what customers paid. ----
+  const charges: Charge[] = [];
+  for (let i = 0; i < 48; i++) {
+    const person = fakePerson();
+    const [description, min, max] = faker.helpers.arrayElement(PRODUCTS);
+    charges.push(
+      await prisma.charge.create({
+        data: {
+          id: chargeId(),
+          customerName: person.name,
+          customerEmail: person.email,
+          description,
+          amountCents: faker.number.int({ min, max }),
+          createdAt: faker.date.recent({ days: 60 }),
+        },
+      }),
+    );
+  }
+  const priya = await prisma.charge.create({
+    data: { id: "ch_3PqRsT9uVwXyZ1", customerName: "Priya Raman", customerEmail: "priya.raman@example.com", description: "Business plan · annual", amountCents: 2_400_00, createdAt: ago(9 * 24 * HOUR) },
+  });
+
+  // ---- Refund history: full and partial refunds, approvals and rejections. ----
+  const pick = (i: number) => charges[i];
+  const days = (n: number) => n * 24 * HOUR;
+  let refundCount = 0;
+  const refund = async (args: Parameters<typeof seedRefund>[0]) => {
+    refundCount++;
+    return seedRefund(args);
+  };
+
+  // Small refunds that executed immediately, spread over the last month (some today).
   for (let i = 0; i < 14; i++) {
-    const createdAt = faker.date.recent({ days: 30 });
-    const big = i % 5 === 0;
-    const amountCents = big
-      ? faker.number.int({ min: 500_00, max: 2_500_00 })
-      : faker.number.int({ min: 5_00, max: 499_99 });
-    const status = big ? (i === 0 ? "rejected" : "executed") : "executed";
-    const customer = fakePerson();
-    const refund = await prisma.refund.create({
-      data: {
-        idempotencyKey: faker.string.uuid(),
-        customerName: customer.name,
-        customerEmail: customer.email,
-        chargeId: `ch_${faker.string.alphanumeric(14)}`,
-        amountCents,
-        reason: faker.helpers.arrayElement(REFUND_REASONS),
-        status,
-        requestedById: faker.helpers.arrayElement(reviewers),
-        providerRefundId: status === "executed" ? `re_${faker.string.alphanumeric(14)}` : null,
-        createdAt,
-      },
+    const c = pick(i);
+    const full = i % 3 === 0;
+    await refund({
+      charge: c,
+      amountCents: full ? Math.min(c.amountCents, 499_99) : Math.round(Math.min(c.amountCents, 499_99) * faker.number.float({ min: 0.2, max: 0.6 })),
+      requestedById: faker.helpers.arrayElement(reviewers),
+      at: i < 3 ? ago(faker.number.int({ min: 1, max: 5 }) * HOUR) : ago(faker.number.int({ min: days(1), max: days(30) })),
+      outcome: "executed",
     });
-    await seedAudit("Refund", refund.id, withoutCustomer(refund), createdAt);
+  }
+  // A charge refunded in two partial installments.
+  const twice = charges.find((c, i) => i >= 14 && c.amountCents >= 300_00)!;
+  await refund({ charge: twice, amountCents: Math.round(twice.amountCents * 0.25), requestedById: "u_bob", at: ago(days(12)), outcome: "executed", reason: "service_not_delivered" });
+  await refund({ charge: twice, amountCents: Math.round(twice.amountCents * 0.15), requestedById: "u_alice", at: ago(days(4)), outcome: "executed", reason: "goodwill" });
+
+  // Large refunds approved by a checker.
+  const large = charges.filter((c) => c.amountCents >= 700_00 && c.id !== twice.id).slice(0, 7);
+  for (const [i, c] of large.slice(0, 4).entries()) {
+    await refund({
+      charge: c,
+      amountCents: i % 2 === 0 ? c.amountCents : Math.max(500_00, Math.round(c.amountCents * 0.5)),
+      requestedById: reviewers[i % reviewers.length],
+      approverId: approvers[i % approvers.length],
+      at: i === 0 ? ago(7 * HOUR) : ago(faker.number.int({ min: days(2), max: days(25) })),
+      outcome: "executed",
+    });
+  }
+  // Rejected by a checker, with the reason recorded.
+  const rejections = ["Customer already received a chargeback for this charge.", "Outside the 30-day refund window; offered account credit instead."];
+  for (const [i, c] of large.slice(4, 6).entries()) {
+    await refund({ charge: c, amountCents: Math.max(500_00, Math.round(c.amountCents * 0.8)), requestedById: reviewers[i], approverId: "u_dave", rejectionReason: rejections[i], at: ago(days(3 + i * 5)), outcome: "rejected", reason: "requested_by_customer" });
   }
 
-  // One large refund already waiting for a checker, requested by Alice.
-  const pending = await prisma.refund.create({
-    data: {
-      idempotencyKey: faker.string.uuid(),
-      customerName: "Priya Raman",
-      customerEmail: "priya.raman@example.com",
-      chargeId: "ch_3PqRsT9uVwXyZ1",
-      amountCents: 750_00,
-      reason: "Annual plan cancelled within 14-day window",
-      status: "pending_approval",
-      requestedById: "u_alice",
-    },
-  });
-  const approval = await prisma.approvalRequest.create({
-    data: {
-      entityType: "Refund",
-      entityId: pending.id,
-      requestedById: "u_alice",
-      payload: JSON.stringify({ refundId: pending.id, chargeId: pending.chargeId, amountCents: pending.amountCents, currency: "usd" }),
-    },
-  });
-  await prisma.refund.update({ where: { id: pending.id }, data: { approvalRequestId: approval.id } });
-  await seedAudit("Refund", pending.id, withoutCustomer(pending), new Date());
-  await seedAudit("ApprovalRequest", approval.id, approval, new Date());
+  // Waiting for a checker. Priya's (requested by Alice) has been waiting over 24 hours.
+  await refund({ charge: priya, amountCents: 750_00, requestedById: "u_alice", at: ago(30 * HOUR), outcome: "pending_approval", reason: "requested_by_customer" });
+  const bigPending = large[6] ?? charges.find((c) => c.amountCents >= 600_00 && !large.includes(c))!;
+  await refund({ charge: bigPending, amountCents: Math.max(500_00, Math.round(bigPending.amountCents * 0.6)), requestedById: "u_bob", at: ago(3 * HOUR), outcome: "pending_approval", reason: "duplicate" });
+  const framePending = charges.find((c) => c.amountCents >= 520_00 && !large.includes(c) && c.id !== twice.id && c.id !== bigPending.id && charges.indexOf(c) >= 14)!;
+  await refund({ charge: framePending, amountCents: 520_00, requestedById: "u_frank", at: ago(0.5 * HOUR), outcome: "pending_approval", reason: "fraudulent" });
 
   const statuses = [
     ...Array(8).fill("submitted"),
@@ -137,10 +259,10 @@ async function main() {
         createdAt,
       },
     });
-    await seedAudit("KycCase", kycCase.id, { status: kycCase.status }, createdAt);
+    await log(SYSTEM, "seed.created", "KycCase", kycCase.id, createdAt, { status: kycCase.status });
   }
 
-  console.log(`Seeded ${USERS.length} users, 15 refunds, ${statuses.length} KYC cases.`);
+  console.log(`Seeded ${USERS.length} users, ${charges.length + 1} charges, ${refundCount} refunds, ${statuses.length} KYC cases.`);
 }
 
 main()

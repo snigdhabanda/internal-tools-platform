@@ -29,6 +29,8 @@ export type ApprovalHandlerContext = {
 export type ApprovalHandler = {
   /** Short human-readable description for approval inboxes. */
   summarize(payload: unknown): string;
+  /** Optional link to the entity's detail page, for approval inboxes. */
+  href?(entityId: string): string;
   onApproved(ctx: ApprovalHandlerContext): Promise<void>;
   onRejected(ctx: ApprovalHandlerContext): Promise<void>;
 };
@@ -120,5 +122,14 @@ export async function listPendingApprovals(db: Db) {
     where: { status: "pending" },
     include: { requestedBy: true },
     orderBy: { createdAt: "asc" },
+  });
+}
+
+export async function listDecidedApprovals(db: Db, take = 50) {
+  return db.approvalRequest.findMany({
+    where: { status: { not: "pending" } },
+    include: { requestedBy: true, approvedBy: true, rejectedBy: true },
+    orderBy: { decidedAt: "desc" },
+    take,
   });
 }

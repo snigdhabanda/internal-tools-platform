@@ -38,6 +38,8 @@ export type AuditFilters = {
   actorId?: string;
   action?: string;
   entityType?: string;
+  /** Any of these entity types (e.g. all types belonging to one app). */
+  entityTypes?: string[];
   entityId?: string;
   from?: Date;
   to?: Date;
@@ -49,7 +51,7 @@ export async function listAuditLogs(filters: AuditFilters = {}) {
     where: {
       actorId: filters.actorId || undefined,
       action: filters.action ? { contains: filters.action } : undefined,
-      entityType: filters.entityType || undefined,
+      entityType: filters.entityType || (filters.entityTypes ? { in: filters.entityTypes } : undefined),
       entityId: filters.entityId || undefined,
       timestamp: filters.from || filters.to ? { gte: filters.from, lte: filters.to } : undefined,
     },
@@ -64,4 +66,18 @@ export async function listAuditFacets() {
     prisma.auditLog.findMany({ distinct: ["action"], select: { action: true }, orderBy: { action: "asc" } }),
   ]);
   return { entityTypes: entityTypes.map((e) => e.entityType), actions: actions.map((a) => a.action) };
+}
+
+/** History of one or more entities (e.g. a refund and its approval request), oldest first. */
+export async function listEntityHistory(entities: { entityType: string; entityId: string }[]) {
+  if (entities.length === 0) return [];
+  return prisma.auditLog.findMany({
+    where: { OR: entities.map((e) => ({ entityType: e.entityType, entityId: e.entityId })) },
+    orderBy: { timestamp: "asc" },
+  });
+}
+
+/** Most recent entries, for activity feeds. */
+export async function listRecentAudit(take = 8, excludeActions: string[] = ["session.switched"]) {
+  return prisma.auditLog.findMany({ where: { action: { notIn: excludeActions } }, orderBy: { timestamp: "desc" }, take });
 }
