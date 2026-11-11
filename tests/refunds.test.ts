@@ -6,6 +6,7 @@ import { GET as exportGET } from "@/app/api/apps/refunds/export/route";
 import { GET as refundsGET, POST as refundsPOST } from "@/app/api/apps/refunds/route";
 import { prisma } from "@/lib/db";
 import { payments } from "@/lib/integrations/payments";
+import { csvCell } from "@/lib/platform/csv";
 import { auditFor, ensureUsers, params, req, type TestUserKey } from "./helpers";
 
 const BIG_CHARGE = "ch_test123";
@@ -35,6 +36,14 @@ async function newCharge(amountCents: number) {
 
 const chargeBalance = (id: string) => prisma.charge.findUniqueOrThrow({ where: { id } });
 
+describe("csvCell", () => {
+  it("neutralizes formulas, including ones preceded by whitespace", () => {
+    expect(csvCell("=1+1")).toBe(`"'=1+1"`);
+    expect(csvCell("  @SUM(A1)")).toBe(`"'  @SUM(A1)"`);
+    expect(csvCell('say "hi"')).toBe(`"say ""hi"""`);
+  });
+});
+
 describe("refunds app", () => {
   beforeAll(async () => {
     await ensureUsers();
@@ -54,6 +63,13 @@ describe("refunds app", () => {
     expect(data.refund.providerRefundId).toMatch(/^re_/);
     expect(data.approvalRequest).toBeNull();
     expect((await auditFor(data.refund.id)).map((l) => l.action)).toEqual(["refund.requested", "refund.executed"]);
+  });
+
+  it("approval payloads (copied into the audit log) omit the customer", async () => {
+    const { data } = await requestRefund(650, "reviewer");
+    const logs = await auditFor(data.approvalRequest.id);
+    expect(logs.length).toBeGreaterThan(0);
+    for (const l of logs) expect(`${l.before ?? ""}${l.after ?? ""}`).not.toMatch(/Jane Doe|jane@example\.com/);
   });
 
   it("refund audit entries omit customer name and email", async () => {
@@ -243,6 +259,8 @@ describe("refunds app", () => {
       expect(csv).toContain("ch_test123");
       const log = await prisma.auditLog.findFirst({ where: { action: "refund.exported", actorId: "t_admin" }, orderBy: { timestamp: "desc" } });
       expect(log).not.toBeNull();
+      expect(log!.after).not.toContain("ch_test123");
+      expect(JSON.parse(log!.after!).filters.q).toBe("[redacted]");
     });
   });
 
