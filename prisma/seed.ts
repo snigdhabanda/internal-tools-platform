@@ -4,6 +4,13 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 faker.seed(20261111);
 
+/** A fake person whose email is derived from their name, e.g. adam.rutherford@gmail.com. */
+function fakePerson() {
+  const firstName = faker.person.firstName();
+  const lastName = faker.person.lastName();
+  return { name: `${firstName} ${lastName}`, email: faker.internet.email({ firstName, lastName }).toLowerCase() };
+}
+
 const USERS = [
   { id: "u_alice", name: "Alice Chen", email: "alice@fintech.example", roles: "reviewer" },
   { id: "u_bob", name: "Bob Martinez", email: "bob@fintech.example", roles: "reviewer" },
@@ -55,11 +62,12 @@ async function main() {
       ? faker.number.int({ min: 500_00, max: 2_500_00 })
       : faker.number.int({ min: 5_00, max: 499_99 });
     const status = big ? (i === 0 ? "rejected" : "executed") : "executed";
+    const customer = fakePerson();
     const refund = await prisma.refund.create({
       data: {
         idempotencyKey: faker.string.uuid(),
-        customerName: faker.person.fullName(),
-        customerEmail: faker.internet.email().toLowerCase(),
+        customerName: customer.name,
+        customerEmail: customer.email,
         chargeId: `ch_${faker.string.alphanumeric(14)}`,
         amountCents,
         reason: faker.helpers.arrayElement(REFUND_REASONS),
@@ -110,10 +118,11 @@ async function main() {
   for (const status of statuses) {
     const createdAt = faker.date.recent({ days: 14 });
     const claimed = status !== "submitted";
+    const applicant = fakePerson();
     const kycCase = await prisma.kycCase.create({
       data: {
-        applicantName: faker.person.fullName(),
-        email: faker.internet.email().toLowerCase(),
+        applicantName: applicant.name,
+        email: applicant.email,
         dateOfBirth: faker.date.birthdate({ min: 18, max: 80, mode: "age" }).toISOString().slice(0, 10),
         country: faker.helpers.arrayElement(["US", "US", "US", "CA", "GB"]),
         ssn: fakeSsn(),
