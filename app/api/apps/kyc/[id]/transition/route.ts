@@ -10,12 +10,12 @@ import { requireRole } from "@/lib/platform/rbac";
 export const POST = route(async (req, { params }: { params: Promise<{ id: string }> }) => {
   const user = requireRole(await getUserFromRequest(req), ["reviewer", "approver"]);
   const { id } = await params;
-  const { action } = await parseBody(req, transitionSchema);
+  const input = await parseBody(req, transitionSchema);
 
   const view = await prisma.$transaction(async (tx) => {
-    const result = await transitionCase(tx, user, id, action);
+    const result = await transitionCase(tx, user, id, input);
     await audit(
-      { actorId: user.id, action: `kyc.${action}`, entityType: KYC_ENTITY, entityId: id, before: result.before, after: result.after },
+      { actorId: user.id, action: result.transition.to === "pending_rejection" ? "kyc.reject_requested" : `kyc.${input.action}`, entityType: KYC_ENTITY, entityId: id, before: result.before, after: result.after },
       tx,
     );
     return result.view;
