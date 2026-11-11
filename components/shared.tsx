@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Avatar as UiAvatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -85,6 +86,7 @@ const STATUS: Record<string, { cls: string; label?: string }> = {
   submitted: { cls: "bg-sky-50 text-sky-700 border-sky-200", label: "New" },
   in_review: { cls: "bg-indigo-50 text-indigo-700 border-indigo-200", label: "In review" },
   escalated: { cls: "bg-orange-50 text-orange-700 border-orange-200" },
+  pending_rejection: { cls: "bg-rose-50 text-rose-700 border-rose-200", label: "Rejection pending 2nd approver" },
   rejected: { cls: "bg-rose-50 text-rose-700 border-rose-200" },
   failed: { cls: "bg-rose-50 text-rose-700 border-rose-200" },
 };
@@ -104,9 +106,16 @@ export function RiskBadge({ score }: { score: number | null }) {
   const [cls, label] =
     score >= 70 ? ["bg-rose-50 text-rose-700 border-rose-200", "High"] : score >= 40 ? ["bg-amber-50 text-amber-800 border-amber-200", "Medium"] : ["bg-emerald-50 text-emerald-700 border-emerald-200", "Low"];
   return (
-    <Badge variant="outline" className={cls}>
-      {label} <span className="tabular-nums opacity-70">{score}</span>
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className={cn(cls, "cursor-help")} data-testid="risk-badge">
+          {label} <span className="tabular-nums opacity-70">{score}</span>
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-60">
+        Vendor risk score {score} on a 0–100 scale. Low 0–39 · Medium 40–69 · High 70–100.
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -15,6 +15,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 type ButtonVariant = ComponentProps<typeof Button>["variant"];
@@ -34,7 +35,7 @@ async function post(url: string, body: unknown): Promise<string | null> {
 /**
  * POSTs JSON to an API route, toasts the result, and refreshes server data.
  * With `confirm`, asks first in a dialog; with `confirm.reason`, the dialog collects a required
- * reason that is sent as `note`.
+ * reason that is sent as `note`; with `confirm.reasonCodes`, a required `reasonCode` dropdown.
  */
 export function ActionButton({
   url,
@@ -50,20 +51,25 @@ export function ActionButton({
   label: string;
   variant?: ButtonVariant;
   size?: "xs" | "sm" | "default";
-  confirm?: { title: string; description?: string; confirmLabel?: string; destructive?: boolean; reason?: { label: string; placeholder?: string } };
+  confirm?: { title: string; description?: string; confirmLabel?: string; destructive?: boolean; reason?: { label: string; placeholder?: string }; reasonCodes?: { value: string; label: string }[] };
   successMessage?: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
+  const [reasonCode, setReasonCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
   async function run() {
     setBusy(true);
     setError(null);
-    const failure = await post(url, confirm?.reason ? { ...body, note: reason.trim() } : body);
+    const failure = await post(url, {
+      ...body,
+      ...(confirm?.reason ? { note: reason.trim() } : {}),
+      ...(confirm?.reasonCodes ? { reasonCode } : {}),
+    });
     setBusy(false);
     if (failure) {
       setError(failure);
@@ -72,6 +78,7 @@ export function ActionButton({
     }
     setOpen(false);
     setReason("");
+    setReasonCode("");
     toast.success(successMessage ?? "Done");
     startTransition(() => router.refresh());
   }
@@ -85,7 +92,7 @@ export function ActionButton({
     );
   }
 
-  const reasonMissing = !!confirm.reason && reason.trim().length < 3;
+  const reasonMissing = (!!confirm.reason && reason.trim().length < 3) || (!!confirm.reasonCodes && !reasonCode);
   return (
     <Dialog
       open={open}
@@ -104,6 +111,21 @@ export function ActionButton({
           <DialogTitle>{confirm.title}</DialogTitle>
           {confirm.description && <DialogDescription>{confirm.description}</DialogDescription>}
         </DialogHeader>
+        {confirm.reasonCodes && (
+          <div className="grid gap-2">
+            <Label htmlFor="action-reason-code">Reason code</Label>
+            <Select value={reasonCode} onValueChange={setReasonCode}>
+              <SelectTrigger id="action-reason-code" className="w-full">
+                <SelectValue placeholder="Select a reason" />
+              </SelectTrigger>
+              <SelectContent>
+                {confirm.reasonCodes.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         {confirm.reason && (
           <div className="grid gap-2">
             <Label htmlFor="action-reason">{confirm.reason.label}</Label>

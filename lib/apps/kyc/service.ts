@@ -12,8 +12,6 @@ import { KYC_ACTIONS, KYC_REASON_CODES, availableActions, findTransition, reason
 
 export const KYC_ENTITY = "KycCase";
 
-const DECISIONS = ["approve", "reject", "escalate"] as const;
-
 /** approve/reject/escalate need a reason code for that action plus a note; claim takes neither. */
 export const transitionSchema = z
   .object({
@@ -23,7 +21,7 @@ export const transitionSchema = z
   })
   .superRefine((b, ctx) => {
     if (b.action === "claim") return;
-    const codes = KYC_REASON_CODES[b.action as (typeof DECISIONS)[number]];
+    const codes = KYC_REASON_CODES[b.action];
     if (!b.reasonCode || !(b.reasonCode in codes)) {
       ctx.addIssue({ code: "custom", path: ["reasonCode"], message: `A reason code is required to ${b.action}: one of ${Object.keys(codes).join(", ")}` });
     }
@@ -165,9 +163,9 @@ async function settleRejection(tx: Db, caseId: string, decider: CurrentUser, sta
 
 // ---------- Read models for the UI ----------
 
-export const KYC_TABS = ["open", "submitted", "in_review", "escalated", "approved", "rejected", "all"] as const;
+export const KYC_TABS = ["open", "submitted", "in_review", "escalated", "pending_rejection", "approved", "rejected", "all"] as const;
 export type KycTab = (typeof KYC_TABS)[number];
-const OPEN_STATUSES = ["submitted", "in_review", "escalated"];
+const OPEN_STATUSES = ["submitted", "in_review", "escalated", "pending_rejection"];
 
 export type KycQuery = { tab?: string; q?: string; mine?: boolean; page?: number; pageSize?: number };
 
@@ -211,6 +209,7 @@ export async function queryCases(db: Db, user: CurrentUser, query: KycQuery) {
     submitted: byStatus.submitted ?? 0,
     in_review: byStatus.in_review ?? 0,
     escalated: byStatus.escalated ?? 0,
+    pending_rejection: byStatus.pending_rejection ?? 0,
     approved: byStatus.approved ?? 0,
     rejected: byStatus.rejected ?? 0,
     all: grouped.reduce((n, g) => n + g._count._all, 0),
