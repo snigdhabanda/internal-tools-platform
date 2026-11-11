@@ -1,13 +1,26 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
+
+function newIdempotencyKey(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  // randomUUID needs a secure context; fall back to an RFC 4122 v4 UUID from getRandomValues.
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
 
 export function RequestRefundForm() {
   const router = useRouter();
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [, startTransition] = useTransition();
+  // One key per refund attempt: resubmitting after a failure reuses it, so a request that
+  // reached the server but lost its response can't refund twice. Rotated after success.
+  const idempotencyKey = useRef<string | null>(null);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -15,17 +28,25 @@ export function RequestRefundForm() {
     const fd = new FormData(form);
     setBusy(true);
     setMessage(null);
-    const res = await fetch("/api/apps/refunds", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        customerName: fd.get("customerName"),
-        customerEmail: fd.get("customerEmail"),
-        chargeId: fd.get("chargeId"),
-        amount: Number(fd.get("amount")),
-        reason: fd.get("reason"),
-      }),
-    });
+    idempotencyKey.current ??= newIdempotencyKey();
+    let res: Response;
+    try {
+      res = await fetch("/api/apps/refunds", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey.current },
+        body: JSON.stringify({
+          customerName: fd.get("customerName"),
+          customerEmail: fd.get("customerEmail"),
+          chargeId: fd.get("chargeId"),
+          amount: Number(fd.get("amount")),
+          reason: fd.get("reason"),
+        }),
+      });
+    } catch {
+      setBusy(false);
+      setMessage({ kind: "error", text: "Network error. Submit again to retry; it will not refund twice." });
+      return;
+    }
     const data = await res.json().catch(() => ({}));
     setBusy(false);
     if (!res.ok) {
@@ -33,11 +54,10 @@ export function RequestRefundForm() {
       setMessage({ kind: "error", text: detail || data.error || "Request failed" });
       return;
     }
+    idempotencyKey.current = null;
     form.reset();
-    setMessage({
-      kind: "ok",
-      text: data.approvalRequest ? "Submitted for approval (≥ $500)." : "Refund executed.",
-    });
+    const outcome = data.approvalRequest ? "Submitted for approval (≥ $500)." : "Refund executed.";
+    setMessage({ kind: "ok", text: data.duplicate ? `Already submitted: ${outcome}` : outcome });
     startTransition(() => router.refresh());
   }
 

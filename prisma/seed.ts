@@ -57,6 +57,7 @@ async function main() {
     const status = big ? (i === 0 ? "rejected" : "executed") : "executed";
     const refund = await prisma.refund.create({
       data: {
+        idempotencyKey: faker.string.uuid(),
         customerName: faker.person.fullName(),
         customerEmail: faker.internet.email().toLowerCase(),
         chargeId: `ch_${faker.string.alphanumeric(14)}`,
@@ -74,6 +75,7 @@ async function main() {
   // One large refund already waiting for a checker, requested by Alice.
   const pending = await prisma.refund.create({
     data: {
+      idempotencyKey: faker.string.uuid(),
       customerName: "Priya Raman",
       customerEmail: "priya.raman@example.com",
       chargeId: "ch_3PqRsT9uVwXyZ1",

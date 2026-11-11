@@ -82,6 +82,8 @@ model Refund {
   requestedBy       User     @relation(fields: [requestedById], references: [id])
   approvalRequestId String?
   providerRefundId  String?
+  /// Client-supplied Idempotency-Key; also sent to the payments provider.
+  idempotencyKey    String   @unique
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
