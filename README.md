@@ -1,6 +1,6 @@
-# Internal Tools Platform (prototype)
+# Internal Tools Platform 
 
-A code-first replacement for the Microsoft Power Apps setup our ops, compliance, and support teams use today. Power Apps gives us a shared platform layer (identity and roles, an audit trail, approvals, data access), and we want 10+ more internal apps on top of it. This repo builds that layer **once, in code, with tests that enforce it**, and puts two real apps on it: a **Refunds** app (charge lookup, partial refunds with server-enforced balances, maker-checker approvals) and a **KYC review queue** with a server-enforced state machine and PII masking. New apps follow [`docs/NEW_APP_PLAYBOOK.md`](docs/NEW_APP_PLAYBOOK.md), and CI guardrails fail any API route that skips authorization or auditing.
+A code-first replacement for the Microsoft Power Apps setup that ops, compliance, and support teams use today. Power Apps provides a shared platform layer (identity and roles, an audit trail, approvals, data access), and the team is looking for 10+ more internal apps on top of it. This repo builds that layer **once, in code, with tests that enforce it**, and puts two real apps on it: a **Refunds** app (charge lookup, partial refunds with server-enforced balances, maker-checker approvals) and a **KYC review queue** with a server-enforced state machine and PII masking. New apps follow [`docs/NEW_APP_PLAYBOOK.md`](docs/NEW_APP_PLAYBOOK.md), and CI guardrails fail any API route that skips authorization or auditing.
 
 ## Run it
 
