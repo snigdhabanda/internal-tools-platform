@@ -19,7 +19,8 @@ SELECT
     MIN("customerName"),
     MIN("customerEmail"),
     'Imported from refund history',
-    MAX(1, SUM(CASE WHEN "status" IN ('rejected', 'failed') THEN 0 ELSE "amountCents" END)),
+    -- At least the largest refund ever requested, so a rejected or failed refund can be retried in full.
+    MAX(MAX("amountCents"), SUM(CASE WHEN "status" IN ('rejected', 'failed') THEN 0 ELSE "amountCents" END)),
     MIN("currency"),
     SUM(CASE WHEN "status" = 'executed' THEN "amountCents" ELSE 0 END),
     SUM(CASE WHEN "status" IN ('pending_approval', 'processing') THEN "amountCents" ELSE 0 END),
