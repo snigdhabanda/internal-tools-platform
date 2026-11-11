@@ -66,7 +66,7 @@ export default async function KycPage() {
                       <div className="font-medium">{c.applicantName}</div>
                       <div className="text-xs text-slate-500">{c.email} · DOB {c.dateOfBirth} · {c.country}</div>
                     </td>
-                    <td className={`${td} font-mono`} data-testid="ssn">{c.ssn}</td>
+                    <td className={`${td} whitespace-nowrap font-mono`} data-testid="ssn">{c.ssn}</td>
                     <td className={`${td} font-mono`}>
                       <div>{c.idNumber}</div>
                       <div className="text-xs text-slate-500">{c.idType.replace(/_/g, " ")}</div>
