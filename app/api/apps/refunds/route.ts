@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { createRefund, listRefunds, processRefund, REFUND_ENTITY, requestRefundSchema } from "@/lib/apps/refunds/service";
+import { createRefund, listRefunds, processRefund, REFUND_ENTITY, refundAuditSnapshot, requestRefundSchema } from "@/lib/apps/refunds/service";
 import { audit } from "@/lib/platform/audit";
 import { getUserFromRequest } from "@/lib/platform/auth";
 import { parseBody, route } from "@/lib/platform/http";
@@ -17,7 +17,7 @@ export const POST = route(async (req) => {
 
   const result = await prisma.$transaction(async (tx) => {
     const created = await createRefund(tx, user, input);
-    await audit({ actorId: user.id, action: "refund.requested", entityType: REFUND_ENTITY, entityId: created.id, after: created }, tx);
+    await audit({ actorId: user.id, action: "refund.requested", entityType: REFUND_ENTITY, entityId: created.id, after: refundAuditSnapshot(created) }, tx);
     return processRefund(tx, user, created);
   });
 

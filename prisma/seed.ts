@@ -29,6 +29,14 @@ const fakeSsn = () =>
 
 const SYSTEM = "system:seed";
 
+// Mirrors refundAuditSnapshot: customer details stay out of the audit log.
+function withoutCustomer<T extends { customerName: string; customerEmail: string }>(row: T): Partial<T> {
+  const snapshot: Partial<T> = { ...row };
+  delete snapshot.customerName;
+  delete snapshot.customerEmail;
+  return snapshot;
+}
+
 async function seedAudit(entityType: string, entityId: string, after: unknown, at: Date) {
   await prisma.auditLog.create({
     data: { actorId: SYSTEM, action: "seed.created", entityType, entityId, after: JSON.stringify(after), timestamp: at },
@@ -60,7 +68,7 @@ async function main() {
         createdAt,
       },
     });
-    await seedAudit("Refund", refund.id, refund, createdAt);
+    await seedAudit("Refund", refund.id, withoutCustomer(refund), createdAt);
   }
 
   // One large refund already waiting for a checker, requested by Alice.
@@ -84,7 +92,7 @@ async function main() {
     },
   });
   await prisma.refund.update({ where: { id: pending.id }, data: { approvalRequestId: approval.id } });
-  await seedAudit("Refund", pending.id, pending, new Date());
+  await seedAudit("Refund", pending.id, withoutCustomer(pending), new Date());
   await seedAudit("ApprovalRequest", approval.id, approval, new Date());
 
   const statuses = [

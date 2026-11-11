@@ -26,6 +26,14 @@ export async function listRefunds(db: Db) {
   return db.refund.findMany({ include: { requestedBy: true }, orderBy: { createdAt: "desc" } });
 }
 
+/** Audit view of a refund: customer name and email stay out of the append-only log. */
+export function refundAuditSnapshot(refund: Refund) {
+  const snapshot: Partial<Refund> = { ...refund };
+  delete snapshot.customerName;
+  delete snapshot.customerEmail;
+  return snapshot;
+}
+
 async function executeRefund(tx: Db, refund: Refund, actorId: string) {
   const providerRefund = await payments.refunds.create({
     charge: refund.chargeId,
@@ -41,7 +49,7 @@ async function executeRefund(tx: Db, refund: Refund, actorId: string) {
     },
   });
   await audit(
-    { actorId, action: `refund.${after.status}`, entityType: REFUND_ENTITY, entityId: refund.id, before: refund, after },
+    { actorId, action: `refund.${after.status}`, entityType: REFUND_ENTITY, entityId: refund.id, before: refundAuditSnapshot(refund), after: refundAuditSnapshot(after) },
     tx,
   );
   return after;
@@ -114,7 +122,7 @@ export const refundApprovalHandler: ApprovalHandler = {
     const refund = await loadPendingRefund(tx, request.entityId);
     const after = await tx.refund.update({ where: { id: refund.id }, data: { status: "rejected" } });
     await audit(
-      { actorId: decider.id, action: "refund.rejected", entityType: REFUND_ENTITY, entityId: refund.id, before: refund, after },
+      { actorId: decider.id, action: "refund.rejected", entityType: REFUND_ENTITY, entityId: refund.id, before: refundAuditSnapshot(refund), after: refundAuditSnapshot(after) },
       tx,
     );
   },

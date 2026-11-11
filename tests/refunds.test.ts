@@ -33,6 +33,15 @@ describe("refunds app", () => {
     expect((await auditFor(data.refund.id)).map((l) => l.action)).toEqual(["refund.requested", "refund.executed"]);
   });
 
+  it("refund audit entries omit customer name and email", async () => {
+    const { data } = await requestRefund(42, "reviewer");
+    const logs = await auditFor(data.refund.id);
+    expect(logs.length).toBeGreaterThan(0);
+    for (const l of logs) {
+      expect(`${l.before ?? ""}${l.after ?? ""}`).not.toMatch(/Jane Doe|jane@example\.com/);
+    }
+  });
+
   it("acceptance: a $600 refund cannot be approved by its requester, and succeeds with a different approver", async () => {
     const { res, data } = await requestRefund(600, "both");
     expect(res.status).toBe(201);
