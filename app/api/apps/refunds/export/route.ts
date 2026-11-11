@@ -14,7 +14,9 @@ export const GET = route(async (req) => {
   const filters = Object.fromEntries(FILTERS.map((k) => [k, req.nextUrl.searchParams.get(k) ?? undefined]));
 
   const rows = await exportRefunds(prisma, user, filters);
-  await audit({ actorId: user.id, action: "refund.exported", entityType: REFUND_ENTITY, entityId: "export", after: { rows: rows.length, filters } });
+  // The search term may be a customer email; record only that a search was applied, not its value.
+  const audited = { ...filters, q: filters.q ? "[redacted]" : undefined };
+  await audit({ actorId: user.id, action: "refund.exported", entityType: REFUND_ENTITY, entityId: "export", after: { rows: rows.length, filters: audited } });
 
   return csvResponse(
     "refunds",
