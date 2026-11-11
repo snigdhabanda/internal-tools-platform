@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { prisma } from "@/lib/db";
 import { approvalHandlers } from "@/lib/apps/registry";
-import { listDecidedApprovals, listPendingApprovals } from "@/lib/platform/approvals";
+import { listDecidedApprovals, listPendingApprovals, summarizeApprovals } from "@/lib/platform/approvals";
 import { getPageAccess } from "@/lib/platform/page";
 import { hasRole } from "@/lib/platform/rbac";
 import { cn } from "@/lib/utils";
@@ -36,7 +36,8 @@ export default async function ApprovalsPage({ searchParams }: { searchParams: Se
   const view = sp.view === "mine" || sp.view === "decided" || sp.view === "all" ? sp.view : isApprover ? "waiting" : "mine";
   const rows = view === "waiting" ? waitingOnMe : view === "mine" ? mine : view === "all" ? pending : [];
   const now = Date.now();
-  const summary = (r: { entityType: string; payload: string; entityId: string }) => handlers[r.entityType]?.summarize(JSON.parse(r.payload)) ?? `${r.entityType} ${r.entityId}`;
+  const labels = await summarizeApprovals(prisma, [...pending, ...decided], handlers);
+  const summary = (r: { id: string }) => labels.get(r.id)!;
   const link = (r: { entityType: string; entityId: string }) => handlers[r.entityType]?.href?.(r.entityId);
 
   const tabs = [

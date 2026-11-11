@@ -103,7 +103,7 @@ async function seedRefund(opts: {
         entityType: "Refund",
         entityId: created.id,
         requestedById: opts.requestedById,
-        payload: JSON.stringify({ refundId: created.id, chargeId: created.chargeId, amountCents: created.amountCents, currency: "usd", customerName: created.customerName }),
+        payload: JSON.stringify({ refundId: created.id, chargeId: created.chargeId, amountCents: created.amountCents, currency: "usd" }),
         createdAt: opts.at,
       },
     });

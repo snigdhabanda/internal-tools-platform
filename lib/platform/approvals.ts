@@ -31,6 +31,11 @@ export type ApprovalHandler = {
   summarize(payload: unknown): string;
   /** Optional link to the entity's detail page, for approval inboxes. */
   href?(entityId: string): string;
+  /**
+   * Optional richer inbox labels that may read the DB, e.g. to name a customer without putting
+   * PII in the payload (payloads are copied into the append-only audit log). Keyed by request id.
+   */
+  describe?(db: Db, requests: ApprovalRequest[]): Promise<Map<string, string>>;
   onApproved(ctx: ApprovalHandlerContext): Promise<void>;
   onRejected(ctx: ApprovalHandlerContext): Promise<void>;
 };
@@ -132,4 +137,17 @@ export async function listDecidedApprovals(db: Db, take = 50) {
     orderBy: { decidedAt: "desc" },
     take,
   });
+}
+
+/** Inbox labels for approval requests: handler.describe() when available, else summarize(payload). */
+export async function summarizeApprovals(db: Db, requests: ApprovalRequest[], handlers: Record<string, ApprovalHandler>) {
+  const labels = new Map<string, string>();
+  for (const [entityType, handler] of Object.entries(handlers)) {
+    const own = requests.filter((r) => r.entityType === entityType);
+    if (own.length === 0) continue;
+    const described = handler.describe ? await handler.describe(db, own) : new Map<string, string>();
+    for (const r of own) labels.set(r.id, described.get(r.id) ?? handler.summarize(JSON.parse(r.payload)));
+  }
+  for (const r of requests) if (!labels.has(r.id)) labels.set(r.id, `${r.entityType} ${r.entityId}`);
+  return labels;
 }

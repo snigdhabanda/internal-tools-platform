@@ -10,7 +10,7 @@ import { formatCents } from "@/lib/format";
 import { kycStats } from "@/lib/apps/kyc/service";
 import { refundStats } from "@/lib/apps/refunds/service";
 import { approvalHandlers, APPS } from "@/lib/apps/registry";
-import { listPendingApprovals } from "@/lib/platform/approvals";
+import { listPendingApprovals, summarizeApprovals } from "@/lib/platform/approvals";
 import { listRecentAudit } from "@/lib/platform/audit";
 import { getCurrentUser, listUsers } from "@/lib/platform/auth";
 import { hasRole } from "@/lib/platform/rbac";
@@ -42,6 +42,7 @@ export default async function Dashboard() {
   ]);
   const names = new Map(users.map((u) => [u.id, u.name]));
   const handlers = approvalHandlers();
+  const labels = await summarizeApprovals(prisma, pending, handlers);
   const approvalTargets = new Map(pending.map((p) => [p.id, handlers[p.entityType]?.href?.(p.entityId) ?? "/approvals"]));
   const isApprover = hasRole(user, "approver");
   const waitingOnMe = isApprover ? pending.filter((p) => p.requestedById !== user.id) : [];
@@ -131,7 +132,7 @@ export default async function Dashboard() {
                     return (
                       <li key={p.id}>
                         <Link href={approvalTargets.get(p.id) ?? "/approvals"} className="block rounded-md p-2 -m-2 hover:bg-muted/60">
-                          <div className="text-sm font-medium">{handlers[p.entityType]?.summarize(JSON.parse(p.payload)) ?? p.entityType}</div>
+                          <div className="text-sm font-medium">{labels.get(p.id)}</div>
                           <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                             {p.requestedBy.name} · <TimeAgo date={p.createdAt} />
                             {stale && <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">Over 24h</Badge>}

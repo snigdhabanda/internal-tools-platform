@@ -47,7 +47,7 @@ export function isIdempotencyKeyConflict(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-type RefundApprovalPayload = { refundId: string; chargeId: string; amountCents: number; currency: string; customerName?: string };
+type RefundApprovalPayload = { refundId: string; chargeId: string; amountCents: number; currency: string };
 
 export async function listRefunds(db: Db) {
   return db.refund.findMany({ include: { requestedBy: true }, orderBy: { createdAt: "desc" } });
@@ -169,7 +169,6 @@ export async function processRefund(tx: Db, user: CurrentUser, created: Refund) 
     chargeId: created.chargeId,
     amountCents: created.amountCents,
     currency: created.currency,
-    customerName: created.customerName,
   };
   const approvalRequest = await createApprovalRequest(tx, {
     entityType: REFUND_ENTITY,
@@ -230,7 +229,18 @@ async function claimPendingRefund(tx: Db, refundId: string, status: "processing"
 export const refundApprovalHandler: ApprovalHandler = {
   summarize(payload) {
     const p = payload as RefundApprovalPayload;
-    return p.customerName ? `Refund ${dollars(p.amountCents)} to ${p.customerName}` : `Refund ${dollars(p.amountCents)} on ${p.chargeId}`;
+    return `Refund ${dollars(p.amountCents)} on ${p.chargeId}`;
+  },
+  // The customer's name stays out of the payload (it's audited); look it up for the inbox instead.
+  async describe(db, requests) {
+    const refunds = await db.refund.findMany({ where: { id: { in: requests.map((r) => r.entityId) } }, select: { id: true, customerName: true } });
+    const names = new Map(refunds.map((r) => [r.id, r.customerName]));
+    return new Map(
+      requests.flatMap((r) => {
+        const name = names.get(r.entityId);
+        return name ? [[r.id, `Refund ${dollars((JSON.parse(r.payload) as RefundApprovalPayload).amountCents)} to ${name}`] as const] : [];
+      }),
+    );
   },
   href: (refundId) => `/apps/refunds?refund=${refundId}`,
   async onApproved({ tx, request, payload, decider }) {
