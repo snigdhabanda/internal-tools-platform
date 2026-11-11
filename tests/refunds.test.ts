@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as decidePOST } from "@/app/api/approvals/[id]/route";
 import { GET as chargesGET } from "@/app/api/apps/refunds/charges/route";
 import { GET as exportGET } from "@/app/api/apps/refunds/export/route";
@@ -9,13 +9,14 @@ import { payments } from "@/lib/integrations/payments";
 import { csvCell } from "@/lib/platform/csv";
 import { auditFor, ensureUsers, params, req, type TestUserKey } from "./helpers";
 
-const BIG_CHARGE = "ch_test123";
+/** Default charge for a test; replaced before each test so cumulative-per-charge totals start at zero. */
+let BIG_CHARGE = "ch_test123";
 
-const body = (amount: number, chargeId = BIG_CHARGE) => ({ chargeId, amount, reason: "duplicate" });
+const body = (amount: number, chargeId = BIG_CHARGE, extra: Record<string, unknown> = {}) => ({ chargeId, amount, reason: "duplicate", ...extra });
 
-async function requestRefund(amount: number, as: TestUserKey = "both", key: string = randomUUID(), chargeId = BIG_CHARGE) {
+async function requestRefund(amount: number, as: TestUserKey = "both", key: string = randomUUID(), chargeId = BIG_CHARGE, extra: Record<string, unknown> = {}) {
   const res = await refundsPOST(
-    req("POST", "/api/apps/refunds", { as, body: body(amount, chargeId), headers: { "Idempotency-Key": key } }),
+    req("POST", "/api/apps/refunds", { as, body: body(amount, chargeId, extra), headers: { "Idempotency-Key": key } }),
     undefined,
   );
   return { res, data: await res.json() };
@@ -28,11 +29,15 @@ const decide = (approvalId: string, as: TestUserKey, decision = "approved", note
   );
 
 /** A fresh charge, so balance assertions aren't affected by other tests. */
-async function newCharge(amountCents: number) {
+async function newCharge(amountCents: number, customerName = "Sam Lee", customerEmail = "sam.lee@example.com") {
   return prisma.charge.create({
-    data: { id: `ch_${randomUUID().replace(/-/g, "")}`, customerName: "Sam Lee", customerEmail: "sam.lee@example.com", description: "Test charge", amountCents },
+    data: { id: `ch_${randomUUID().replace(/-/g, "")}`, customerName, customerEmail, description: "Test charge", amountCents },
   });
 }
+
+/** Moves every refund out of the requester window, so each test starts with an empty 24h total. */
+const clearRequesterWindows = () =>
+  prisma.refund.updateMany({ where: { createdAt: { gte: new Date(Date.now() - 48 * 3_600_000) } }, data: { createdAt: new Date(Date.now() - 72 * 3_600_000) } });
 
 const chargeBalance = (id: string) => prisma.charge.findUniqueOrThrow({ where: { id } });
 
@@ -45,13 +50,10 @@ describe("csvCell", () => {
 });
 
 describe("refunds app", () => {
-  beforeAll(async () => {
-    await ensureUsers();
-    await prisma.charge.upsert({
-      where: { id: BIG_CHARGE },
-      update: {},
-      create: { id: BIG_CHARGE, customerName: "Jane Doe", customerEmail: "jane@example.com", description: "Test charge", amountCents: 1_000_000_000 },
-    });
+  beforeAll(ensureUsers);
+  beforeEach(async () => {
+    BIG_CHARGE = (await newCharge(1_000_000_000, "Jane Doe", "jane@example.com")).id;
+    await clearRequesterWindows();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -251,16 +253,76 @@ describe("refunds app", () => {
 
     it("CSV export requires a role and is audited", async () => {
       expect((await exportGET(req("GET", "/api/apps/refunds/export"), undefined)).status).toBe(401);
-      const res = await exportGET(req("GET", "/api/apps/refunds/export?tab=all&q=ch_test123", { as: "admin" }), undefined);
+      await requestRefund(12, "reviewer");
+      const res = await exportGET(req("GET", `/api/apps/refunds/export?tab=all&q=${BIG_CHARGE}`, { as: "admin" }), undefined);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toMatch(/text\/csv/);
       const csv = await res.text();
       expect(csv.split("\n")[0]).toMatch(/^id,created_at,customer_name/);
-      expect(csv).toContain("ch_test123");
+      expect(csv).toContain(BIG_CHARGE);
+      expect(csv.split("\n")[0]).toContain("approved_by");
+      expect(csv.split("\n")[1]).toContain(`"auto"`);
       const log = await prisma.auditLog.findFirst({ where: { action: "refund.exported", actorId: "t_admin" }, orderBy: { timestamp: "desc" } });
       expect(log).not.toBeNull();
-      expect(log!.after).not.toContain("ch_test123");
+      expect(log!.after).not.toContain(BIG_CHARGE);
       expect(JSON.parse(log!.after!).filters.q).toBe("[redacted]");
+    });
+  });
+
+  describe("approval controls", () => {
+    it("two $499.99 refunds on the same charge: the second needs approval (cumulative per charge)", async () => {
+      const charge = await newCharge(2_000_00);
+      const first = await requestRefund(499.99, "reviewer", randomUUID(), charge.id);
+      expect(first.data.refund.status).toBe("executed");
+      expect(first.data.refund.approvalRule).toBeNull();
+
+      const second = await requestRefund(499.99, "reviewer", randomUUID(), charge.id);
+      expect(second.res.status).toBe(201);
+      expect(second.data.refund.status).toBe("pending_approval");
+      expect(second.data.refund.approvalRule).toBe("charge_cumulative");
+      expect(second.data.refund.approvalReason).toMatch(/^Needs approval: cumulative refunds on this charge exceed \$500\.00/);
+      expect(second.data.approvalRequest.status).toBe("pending");
+      expect(await chargeBalance(charge.id)).toMatchObject({ amountRefundedCents: 499_99, amountPendingCents: 499_99 });
+    });
+
+    it("pending refunds count toward the charge total too", async () => {
+      const charge = await newCharge(2_000_00);
+      expect((await requestRefund(600, "reviewer", randomUUID(), charge.id)).data.refund.status).toBe("pending_approval");
+      const small = await requestRefund(10, "reviewer", randomUUID(), charge.id);
+      expect(small.data.refund.status).toBe("pending_approval");
+      expect(small.data.refund.approvalRule).toBe("charge_cumulative");
+    });
+
+    it("the requester's 24h cap triggers approval once their total reaches $2,000", async () => {
+      const spy = vi.spyOn(payments.refunds, "create");
+      for (let i = 0; i < 4; i++) {
+        const { data } = await requestRefund(450, "reviewer", randomUUID(), (await newCharge(1_000_00)).id);
+        expect(data.refund.status).toBe("executed");
+      }
+      // $1,800 so far; another $200 on a fresh charge brings the requester to $2,000.
+      const capped = await requestRefund(200, "reviewer", randomUUID(), (await newCharge(1_000_00)).id);
+      expect(capped.data.refund.status).toBe("pending_approval");
+      expect(capped.data.refund.approvalRule).toBe("requester_daily");
+      expect(capped.data.refund.approvalReason).toMatch(/requester's refunds in the last 24h exceed \$2,000\.00/);
+      expect(spy).toHaveBeenCalledTimes(4);
+
+      // Another requester is unaffected, and refunds older than the window don't count.
+      expect((await requestRefund(200, "both", randomUUID(), (await newCharge(1_000_00)).id)).data.refund.status).toBe("executed");
+      await clearRequesterWindows();
+      expect((await requestRefund(200, "reviewer", randomUUID(), (await newCharge(1_000_00)).id)).data.refund.status).toBe("executed");
+    });
+
+    it("a fraudulent refund without an internal note is rejected with 400", async () => {
+      const charge = await newCharge(100_00);
+      for (const note of [undefined, "", "   "]) {
+        const { res, data } = await requestRefund(20, "reviewer", randomUUID(), charge.id, { reason: "fraudulent", note });
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(data)).toMatch(/internal note is required/i);
+      }
+      expect(await prisma.refund.count({ where: { chargeId: charge.id } })).toBe(0);
+      const ok = await requestRefund(20, "reviewer", randomUUID(), charge.id, { reason: "fraudulent", note: "Cardholder reported card stolen" });
+      expect(ok.res.status).toBe(201);
+      expect(ok.data.refund.note).toBe("Cardholder reported card stolen");
     });
   });
 

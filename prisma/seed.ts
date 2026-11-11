@@ -1,5 +1,6 @@
 import { faker } from "@faker-js/faker";
 import { PrismaClient, type Charge } from "@prisma/client";
+import { approvalSentence, approvalTriggers, COUNTED_REFUND_STATUSES, REFUND_CONTROLS } from "../lib/apps/refunds/controls";
 
 const prisma = new PrismaClient();
 faker.seed(20261111);
@@ -77,8 +78,28 @@ async function seedRefund(opts: {
   approverId?: string;
   rejectionReason?: string;
   reason?: (typeof REFUND_REASONS)[number];
+  note?: string;
 }) {
-  const needsApproval = opts.amountCents >= 500_00;
+  // Apply the same approval rules the API does, against the balances and history seeded so far.
+  const charge = await prisma.charge.findUniqueOrThrow({ where: { id: opts.charge.id } });
+  const window = await prisma.refund.aggregate({
+    where: {
+      requestedById: opts.requestedById,
+      createdAt: { gte: new Date(opts.at.getTime() - REFUND_CONTROLS.requesterWindowHours * HOUR), lte: opts.at },
+      status: { in: COUNTED_REFUND_STATUSES },
+    },
+    _sum: { amountCents: true },
+  });
+  const triggers = approvalTriggers({
+    amountCents: opts.amountCents,
+    chargeRefundedCents: charge.amountRefundedCents,
+    chargePendingCents: charge.amountPendingCents,
+    requesterWindowCents: window._sum.amountCents ?? 0,
+  });
+  const needsApproval = triggers.length > 0;
+  if (needsApproval !== (opts.outcome === "pending_approval" || !!opts.approverId)) {
+    throw new Error(`Seed refund on ${opts.charge.id} (${opts.amountCents}) contradicts the approval rules: ${triggers.map((t) => t.rule).join(",") || "none"}`);
+  }
   const decidedAt = new Date(opts.at.getTime() + faker.number.int({ min: 1, max: 6 }) * HOUR);
   const created = await prisma.refund.create({
     data: {
@@ -88,8 +109,10 @@ async function seedRefund(opts: {
       chargeId: opts.charge.id,
       amountCents: opts.amountCents,
       reason: opts.reason ?? faker.helpers.arrayElement(REFUND_REASONS),
-      note: faker.helpers.arrayElement(NOTES),
+      note: opts.note ?? faker.helpers.arrayElement(NOTES),
       status: needsApproval ? "pending_approval" : "processing",
+      approvalRule: needsApproval ? triggers.map((t) => t.rule).join(",") : null,
+      approvalReason: approvalSentence(triggers),
       requestedById: opts.requestedById,
       createdAt: opts.at,
     },
@@ -198,12 +221,14 @@ async function main() {
     });
   }
   // A charge refunded in two partial installments.
-  const twice = charges.find((c, i) => i >= 14 && c.amountCents >= 300_00)!;
+  // Kept under the cumulative-per-charge threshold (40% of < $1,200), so both executed without approval.
+  const twice = charges.find((c, i) => i >= 14 && c.amountCents >= 300_00 && c.amountCents < 1_200_00)!;
   await refund({ charge: twice, amountCents: Math.round(twice.amountCents * 0.25), requestedById: "u_bob", at: ago(days(12)), outcome: "executed", reason: "service_not_delivered" });
   await refund({ charge: twice, amountCents: Math.round(twice.amountCents * 0.15), requestedById: "u_alice", at: ago(days(4)), outcome: "executed", reason: "goodwill" });
 
   // Large refunds approved by a checker.
-  const large = charges.filter((c) => c.amountCents >= 700_00 && c.id !== twice.id).slice(0, 7);
+  // Charges 0-13 already carry the small refunds above; use fresh charges so no charge is over-refunded.
+  const large = charges.filter((c, i) => i >= 14 && c.amountCents >= 700_00 && c.id !== twice.id).slice(0, 7);
   for (const [i, c] of large.slice(0, 4).entries()) {
     await refund({
       charge: c,
@@ -222,10 +247,19 @@ async function main() {
 
   // Waiting for a checker. Priya's (requested by Alice) has been waiting over 24 hours.
   await refund({ charge: priya, amountCents: 750_00, requestedById: "u_alice", at: ago(30 * HOUR), outcome: "pending_approval", reason: "requested_by_customer" });
-  const bigPending = large[6] ?? charges.find((c) => c.amountCents >= 600_00 && !large.includes(c))!;
+  const bigPending = large[6] ?? charges.find((c, i) => i >= 14 && c.amountCents >= 600_00 && !large.includes(c) && c.id !== twice.id)!;
   await refund({ charge: bigPending, amountCents: Math.max(500_00, Math.round(bigPending.amountCents * 0.6)), requestedById: "u_bob", at: ago(3 * HOUR), outcome: "pending_approval", reason: "duplicate" });
   const framePending = charges.find((c) => c.amountCents >= 520_00 && !large.includes(c) && c.id !== twice.id && c.id !== bigPending.id && charges.indexOf(c) >= 14)!;
   await refund({ charge: framePending, amountCents: 520_00, requestedById: "u_frank", at: ago(0.5 * HOUR), outcome: "pending_approval", reason: "fraudulent" });
+
+  // Split-refund attempt: $499.99 executed automatically, then a second $499.99 on the same charge
+  // is caught by the cumulative-per-charge rule and waits for a checker.
+  const splitPerson = fakePerson();
+  const split = await prisma.charge.create({
+    data: { id: chargeId(), customerName: splitPerson.name, customerEmail: splitPerson.email, description: "Team plan · annual", amountCents: 1_199_00, createdAt: ago(20 * 24 * HOUR) },
+  });
+  await refund({ charge: split, amountCents: 499_99, requestedById: "u_frank", at: ago(2 * HOUR), outcome: "executed", reason: "service_not_delivered", note: "Customer says seats were never provisioned." });
+  await refund({ charge: split, amountCents: 499_99, requestedById: "u_frank", at: ago(20 * 60_000), outcome: "pending_approval", reason: "service_not_delivered", note: "Second half of the same complaint." });
 
   const statuses = [
     ...Array(8).fill("submitted"),
@@ -262,7 +296,7 @@ async function main() {
     await log(SYSTEM, "seed.created", "KycCase", kycCase.id, createdAt, { status: kycCase.status });
   }
 
-  console.log(`Seeded ${USERS.length} users, ${charges.length + 1} charges, ${refundCount} refunds, ${statuses.length} KYC cases.`);
+  console.log(`Seeded ${USERS.length} users, ${charges.length + 2} charges, ${refundCount} refunds, ${statuses.length} KYC cases.`);
 }
 
 main()

@@ -11,7 +11,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { approvalTriggers, REFUND_CONTROLS } from "@/lib/apps/refunds/controls";
 import { formatCents, formatDay } from "@/lib/format";
+import { ChargeBalancePanel } from "./ChargeBalancePanel";
 
 type Charge = {
   id: string;
@@ -37,7 +39,7 @@ function newIdempotencyKey(): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value: string; label: string }[]; thresholdCents: number }) {
+export function NewRefundDialog({ reasons, requesterWindowCents }: { reasons: { value: string; label: string }[]; requesterWindowCents: number }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
@@ -108,7 +110,15 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
       : charge && amountCents > charge.remainingCents
         ? `Can't exceed the remaining ${formatCents(charge.remainingCents)}`
         : null;
-  const needsApproval = amountCents >= thresholdCents;
+  // Preview of the server's decision (the server re-checks with live totals).
+  const triggers =
+    charge && !amountError
+      ? approvalTriggers({ amountCents, chargeRefundedCents: charge.amountRefundedCents, chargePendingCents: charge.amountPendingCents, requesterWindowCents })
+      : [];
+  const needsApproval = triggers.length > 0;
+  const triggerText = triggers.map((t) => t.message).join("; ");
+  const noteRequired = reason === "fraudulent";
+  const noteError = noteRequired && !note.trim() ? "An internal note is required for fraudulent refunds" : null;
 
   async function submit() {
     if (!charge) return;
@@ -221,21 +231,9 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
                 {charge.customerName} · {charge.customerEmail}
               </DialogDescription>
             </DialogHeader>
-            <div className="grid grid-cols-3 divide-x rounded-lg border bg-muted/40 text-center">
-              {[
-                ["Original charge", charge.amountCents],
-                ["Already refunded", charge.amountRefundedCents],
-                ["Remaining", charge.remainingCents],
-              ].map(([label, cents]) => (
-                <div key={label} className="px-3 py-3">
-                  <div className="text-xs text-muted-foreground">{label}</div>
-                  <div className="mt-0.5 text-sm font-semibold tabular-nums">{formatCents(cents as number)}</div>
-                </div>
-              ))}
-            </div>
+            <ChargeBalancePanel charge={charge} />
             <p className="-mt-2 text-xs text-muted-foreground">
               <span className="font-mono">{charge.id}</span> · {charge.description} · {formatDay(charge.createdAt)}
-              {charge.amountPendingCents > 0 && ` · ${formatCents(charge.amountPendingCents)} pending approval`}
             </p>
 
             {step === "details" ? (
@@ -259,8 +257,8 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
                   <p className={`text-xs ${amountError ? "text-destructive" : needsApproval ? "font-medium text-amber-700" : "text-muted-foreground"}`}>
                     {amountError ??
                       (needsApproval
-                        ? `${formatCents(thresholdCents)} or more: a second approver must sign off before money moves.`
-                        : `Partial refunds allowed. Under ${formatCents(thresholdCents)} executes immediately.`)}
+                        ? `Needs approval: ${triggerText}. A second approver must sign off before money moves.`
+                        : `Partial refunds allowed. Executes immediately: under ${formatCents(REFUND_CONTROLS.singleRefundCents)} and within the charge and daily limits.`)}
                   </p>
                 </div>
                 <div className="grid gap-2">
@@ -280,9 +278,18 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="refund-note">
-                    Internal note <span className="font-normal text-muted-foreground">(optional)</span>
+                    Internal note <span className="font-normal text-muted-foreground">{noteRequired ? "(required for fraud)" : "(optional)"}</span>
                   </Label>
-                  <Textarea id="refund-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} rows={2} placeholder="Context for the approver. Not shared with the customer." />
+                  <Textarea
+                    id="refund-note"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    maxLength={500}
+                    rows={2}
+                    aria-invalid={!!noteError}
+                    placeholder={noteRequired ? "What indicates fraud? e.g. cardholder disputed, matched stolen-card report" : "Context for the approver. Not shared with the customer."}
+                  />
+                  {noteError && <p className="text-xs text-destructive">{noteError}</p>}
                 </div>
               </div>
             ) : (
@@ -296,7 +303,10 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
                 </p>
                 <p className="mt-3">
                   {needsApproval ? (
-                    <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">Goes to a second approver first</Badge>
+                    <span className="grid gap-1.5">
+                      <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">Goes to a second approver first</Badge>
+                      <span className="text-xs text-amber-800" data-testid="confirm-trigger">Needs approval: {triggerText}</span>
+                    </span>
                   ) : (
                     <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">Executes immediately</Badge>
                   )}
@@ -311,7 +321,7 @@ export function NewRefundDialog({ reasons, thresholdCents }: { reasons: { value:
                 <ArrowLeft /> {step === "confirm" ? "Back" : "Start over"}
               </Button>
               {step === "details" ? (
-                <Button onClick={() => setStep("confirm")} disabled={!!amountError || !reason}>
+                <Button onClick={() => setStep("confirm")} disabled={!!amountError || !reason || !!noteError}>
                   Review refund
                 </Button>
               ) : (

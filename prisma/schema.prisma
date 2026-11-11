@@ -99,13 +99,17 @@ model Refund {
   currency          String   @default("usd")
   /// Reason code: duplicate | fraudulent | requested_by_customer | service_not_delivered | goodwill
   reason            String
-  /// Optional internal note from the requester (not sent to the processor).
+  /// Internal note from the requester (not sent to the processor). Required for reason "fraudulent".
   note              String?
   /// processing | pending_approval | executed | rejected | failed
   status            String
   requestedById     String
   requestedBy       User     @relation(fields: [requestedById], references: [id])
   approvalRequestId String?
+  /// Approval rules that triggered, comma-separated: single_amount | charge_cumulative | requester_daily
+  approvalRule      String?
+  /// Human-readable trigger snapshot at request time, e.g. "Needs approval: cumulative refunds on this charge exceed $500.00 (...)"
+  approvalReason    String?
   providerRefundId  String?
   /// Client-supplied Idempotency-Key; also sent to the payments provider.
   idempotencyKey    String   @unique
