@@ -97,6 +97,9 @@ async function seedRefund(opts: {
     requesterWindowCents: window._sum.amountCents ?? 0,
   });
   const needsApproval = triggers.length > 0;
+  const reason = opts.reason ?? faker.helpers.arrayElement(REFUND_REASONS);
+  // Fraudulent refunds require an internal note (the API rejects them without one).
+  const note = opts.note ?? faker.helpers.arrayElement(NOTES) ?? (reason === "fraudulent" ? "Cardholder disputed the charge as unauthorized." : null);
   if (needsApproval !== (opts.outcome === "pending_approval" || !!opts.approverId)) {
     throw new Error(`Seed refund on ${opts.charge.id} (${opts.amountCents}) contradicts the approval rules: ${triggers.map((t) => t.rule).join(",") || "none"}`);
   }
@@ -108,8 +111,8 @@ async function seedRefund(opts: {
       customerEmail: opts.charge.customerEmail,
       chargeId: opts.charge.id,
       amountCents: opts.amountCents,
-      reason: opts.reason ?? faker.helpers.arrayElement(REFUND_REASONS),
-      note: opts.note ?? faker.helpers.arrayElement(NOTES),
+      reason,
+      note,
       status: needsApproval ? "pending_approval" : "processing",
       approvalRule: needsApproval ? triggers.map((t) => t.rule).join(",") : null,
       approvalReason: approvalSentence(triggers),
