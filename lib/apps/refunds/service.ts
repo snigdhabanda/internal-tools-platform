@@ -1,5 +1,6 @@
 import { Prisma, type ApprovalRequest, type Refund } from "@prisma/client";
 import { z } from "zod";
+import { parseDay } from "@/lib/dates";
 import type { Db } from "@/lib/db";
 import { payments } from "@/lib/integrations/payments";
 import { createApprovalRequest, type ApprovalHandler } from "@/lib/platform/approvals";
@@ -11,12 +12,23 @@ export const REFUND_ENTITY = "Refund";
 /** Refunds at or above this amount need maker-checker approval. */
 export const APPROVAL_THRESHOLD_CENTS = 500_00;
 
+export const REFUND_REASONS = ["duplicate", "fraudulent", "requested_by_customer", "service_not_delivered", "goodwill"] as const;
+export type RefundReason = (typeof REFUND_REASONS)[number];
+export const REFUND_REASON_LABELS: Record<RefundReason, string> = {
+  duplicate: "Duplicate charge",
+  fraudulent: "Fraudulent",
+  requested_by_customer: "Requested by customer",
+  service_not_delivered: "Service not delivered",
+  goodwill: "Goodwill",
+};
+export const reasonLabel = (code: string) => REFUND_REASON_LABELS[code as RefundReason] ?? code;
+
+/** The customer comes from the charge, never from the request: refunds can only go back to the original payer. */
 export const requestRefundSchema = z.object({
-  customerName: z.string().trim().min(1).max(200),
-  customerEmail: z.string().trim().email(),
   chargeId: z.string().trim().regex(/^ch_[A-Za-z0-9]+$/, "Must be a charge id like ch_123"),
   amount: z.number().positive().max(100_000).multipleOf(0.01),
-  reason: z.string().trim().min(3).max(500),
+  reason: z.enum(REFUND_REASONS),
+  note: z.string().trim().max(500).optional().transform((v) => v || null),
 });
 export type RequestRefundInput = z.infer<typeof requestRefundSchema>;
 
@@ -49,6 +61,54 @@ export function refundAuditSnapshot(refund: Refund) {
   return snapshot;
 }
 
+export type ChargeBalance = { amountCents: number; amountRefundedCents: number; amountPendingCents: number };
+
+/** What can still be refunded: original amount minus executed refunds minus refunds on hold. */
+export const remainingCents = (c: ChargeBalance) => c.amountCents - c.amountRefundedCents - c.amountPendingCents;
+
+/** Look up charges by charge id or customer email (exact or partial). */
+export async function searchCharges(db: Db, q: string) {
+  const term = q.trim();
+  if (term.length < 3) return [];
+  return db.charge.findMany({
+    where: { OR: [{ id: term }, { customerEmail: { contains: term } }, ...(term.startsWith("ch_") ? [{ id: { startsWith: term } }] : [])] },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+}
+
+/**
+ * Holds `amountCents` of the charge's balance for a new refund. A single conditional UPDATE, so
+ * two concurrent requests can never both pass the balance check and over-refund the charge.
+ */
+async function reserveBalance(tx: Db, chargeId: string, amountCents: number) {
+  const charge = await tx.charge.findUnique({ where: { id: chargeId } });
+  if (!charge) throw new NotFoundError(`Charge ${chargeId} not found`);
+  const updated = await tx.$executeRaw`
+    UPDATE "Charge" SET "amountPendingCents" = "amountPendingCents" + ${amountCents}
+    WHERE "id" = ${chargeId} AND "amountCents" - "amountRefundedCents" - "amountPendingCents" >= ${amountCents}`;
+  if (updated !== 1) {
+    const latest = await tx.charge.findUniqueOrThrow({ where: { id: chargeId } });
+    throw new BadRequestError(
+      `Refund of ${dollars(amountCents)} exceeds the remaining refundable balance of ${dollars(Math.max(0, remainingCents(latest)))} on ${chargeId}`,
+    );
+  }
+  return charge;
+}
+
+/** Moves a refund's hold into amountRefunded (executed) or releases it (rejected/failed). */
+async function settleBalance(tx: Db, refund: Refund, outcome: "executed" | "released") {
+  await tx.charge.update({
+    where: { id: refund.chargeId },
+    data: {
+      amountPendingCents: { decrement: refund.amountCents },
+      ...(outcome === "executed" ? { amountRefundedCents: { increment: refund.amountCents } } : {}),
+    },
+  });
+}
+
+const dollars = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 async function executeRefund(tx: Db, refund: Refund, actorId: string, before: Refund = refund) {
   const providerRefund = await payments.refunds.create({
     charge: refund.chargeId,
@@ -63,6 +123,7 @@ async function executeRefund(tx: Db, refund: Refund, actorId: string, before: Re
       providerRefundId: providerRefund.id,
     },
   });
+  await settleBalance(tx, after, after.status === "executed" ? "executed" : "released");
   await audit(
     { actorId, action: `refund.${after.status}`, entityType: REFUND_ENTITY, entityId: refund.id, before: refundAuditSnapshot(before), after: refundAuditSnapshot(after) },
     tx,
@@ -70,17 +131,23 @@ async function executeRefund(tx: Db, refund: Refund, actorId: string, before: Re
   return after;
 }
 
-/** Step 1: persist the refund request. The route audits "refund.requested" right after this. */
+/**
+ * Step 1: hold the amount against the charge's remaining balance and persist the refund request.
+ * The route audits "refund.requested" right after this.
+ */
 export async function createRefund(tx: Db, user: CurrentUser, input: RequestRefundInput, idempotencyKey: string) {
   const amountCents = Math.round(input.amount * 100);
+  const charge = await reserveBalance(tx, input.chargeId, amountCents);
   return tx.refund.create({
     data: {
       idempotencyKey,
-      customerName: input.customerName,
-      customerEmail: input.customerEmail,
-      chargeId: input.chargeId,
+      customerName: charge.customerName,
+      customerEmail: charge.customerEmail,
+      chargeId: charge.id,
+      currency: charge.currency,
       amountCents,
       reason: input.reason,
+      note: input.note,
       status: amountCents >= APPROVAL_THRESHOLD_CENTS ? "pending_approval" : "processing",
       requestedById: user.id,
     },
@@ -131,9 +198,8 @@ export async function replayRefund(
     existing.requestedById !== user.id ||
     existing.chargeId !== input.chargeId ||
     existing.amountCents !== Math.round(input.amount * 100) ||
-    existing.customerName !== input.customerName ||
-    existing.customerEmail !== input.customerEmail ||
-    existing.reason !== input.reason
+    existing.reason !== input.reason ||
+    (existing.note ?? null) !== input.note
   ) {
     throw new ConflictError(`${IDEMPOTENCY_HEADER} was already used for a different refund request`);
   }
@@ -163,17 +229,141 @@ async function claimPendingRefund(tx: Db, refundId: string, status: "processing"
 export const refundApprovalHandler: ApprovalHandler = {
   summarize(payload) {
     const p = payload as RefundApprovalPayload;
-    return `Refund $${(p.amountCents / 100).toFixed(2)} on ${p.chargeId}`;
+    return `Refund ${dollars(p.amountCents)} on ${p.chargeId}`;
   },
+  // The customer's name stays out of the payload (it's audited); look it up for the inbox instead.
+  async describe(db, requests) {
+    const refunds = await db.refund.findMany({ where: { id: { in: requests.map((r) => r.entityId) } }, select: { id: true, customerName: true } });
+    const names = new Map(refunds.map((r) => [r.id, r.customerName]));
+    return new Map(
+      requests.flatMap((r) => {
+        const name = names.get(r.entityId);
+        return name ? [[r.id, `Refund ${dollars((JSON.parse(r.payload) as RefundApprovalPayload).amountCents)} to ${name}`] as const] : [];
+      }),
+    );
+  },
+  href: (refundId) => `/apps/refunds?refund=${refundId}`,
   async onApproved({ tx, request, payload, decider }) {
     const { before, after } = await claimPendingRefund(tx, request.entityId, "processing", payload as RefundApprovalPayload);
     await executeRefund(tx, after, decider.id, before);
   },
   async onRejected({ tx, request, decider }) {
     const { before, after } = await claimPendingRefund(tx, request.entityId, "rejected");
+    await settleBalance(tx, after, "released");
     await audit(
       { actorId: decider.id, action: "refund.rejected", entityType: REFUND_ENTITY, entityId: after.id, before: refundAuditSnapshot(before), after: refundAuditSnapshot(after) },
       tx,
     );
   },
 };
+
+// ---------- Read models for the UI ----------
+
+export const REFUND_STATUSES = ["pending_approval", "processing", "executed", "rejected", "failed"] as const;
+/** List tabs. "mine" = pending refunds the current user is allowed to decide. */
+export const REFUND_TABS = ["mine", "pending_approval", "executed", "rejected", "all"] as const;
+export type RefundTab = (typeof REFUND_TABS)[number];
+export const REFUND_SORTS = ["newest", "oldest", "amount_desc", "amount_asc"] as const;
+export type RefundSort = (typeof REFUND_SORTS)[number];
+
+export type RefundQuery = {
+  tab?: string;
+  q?: string;
+  min?: string;
+  max?: string;
+  from?: string;
+  to?: string;
+  sort?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+const ORDER: Record<RefundSort, Prisma.RefundOrderByWithRelationInput> = {
+  newest: { createdAt: "desc" },
+  oldest: { createdAt: "asc" },
+  amount_desc: { amountCents: "desc" },
+  amount_asc: { amountCents: "asc" },
+};
+
+const toCents = (v?: string) => {
+  const n = Number(v);
+  return v && Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : undefined;
+};
+
+/** Search + amount + date filters (everything except the tab). */
+function filterWhere(query: RefundQuery): Prisma.RefundWhereInput {
+  const q = query.q?.trim();
+  const min = toCents(query.min);
+  const max = toCents(query.max);
+  const from = parseDay(query.from);
+  const to = parseDay(query.to, true);
+  return {
+    // SQLite LIKE is case-insensitive for ASCII, so `contains` matches regardless of case.
+    OR: q ? [{ customerName: { contains: q } }, { customerEmail: { contains: q } }, { chargeId: { contains: q } }, { id: q }] : undefined,
+    amountCents: min !== undefined || max !== undefined ? { gte: min, lte: max } : undefined,
+    createdAt: from || to ? { gte: from, lte: to } : undefined,
+  };
+}
+
+function tabWhere(tab: RefundTab, user: CurrentUser): Prisma.RefundWhereInput {
+  switch (tab) {
+    case "mine":
+      // Maker-checker: you can never decide your own request, and only approvers decide.
+      return user.roles.includes("approver") ? { status: "pending_approval", requestedById: { not: user.id } } : { id: "__none__" };
+    case "all":
+      return {};
+    default:
+      return { status: tab };
+  }
+}
+
+export function resolveTab(tab: string | undefined, user: CurrentUser): RefundTab {
+  if ((REFUND_TABS as readonly string[]).includes(tab ?? "")) return tab as RefundTab;
+  return user.roles.includes("approver") ? "mine" : "all";
+}
+
+/** Filtered, sorted, paginated refunds plus per-tab counts for the current filters. */
+export async function queryRefunds(db: Db, user: CurrentUser, query: RefundQuery) {
+  const pageSize = query.pageSize ?? 15;
+  const page = Math.max(1, query.page ?? 1);
+  const sort = (REFUND_SORTS as readonly string[]).includes(query.sort ?? "") ? (query.sort as RefundSort) : "newest";
+  const tab = resolveTab(query.tab, user);
+  const filters = filterWhere(query);
+  const where = { AND: [filters, tabWhere(tab, user)] };
+  const [rows, total, ...tabCounts] = await Promise.all([
+    db.refund.findMany({ where, include: { requestedBy: true }, orderBy: ORDER[sort], skip: (page - 1) * pageSize, take: pageSize }),
+    db.refund.count({ where }),
+    ...REFUND_TABS.map((t) => db.refund.count({ where: { AND: [filters, tabWhere(t, user)] } })),
+  ]);
+  const counts = Object.fromEntries(REFUND_TABS.map((t, i) => [t, tabCounts[i]])) as Record<RefundTab, number>;
+  return { rows, total, counts, tab, page, pageSize, sort };
+}
+
+/** All refunds matching the list filters (no pagination), for CSV export. */
+export async function exportRefunds(db: Db, user: CurrentUser, query: RefundQuery) {
+  const tab = resolveTab(query.tab, user);
+  const sort = (REFUND_SORTS as readonly string[]).includes(query.sort ?? "") ? (query.sort as RefundSort) : "newest";
+  return db.refund.findMany({ where: { AND: [filterWhere(query), tabWhere(tab, user)] }, include: { requestedBy: true }, orderBy: ORDER[sort] });
+}
+
+export async function getRefund(db: Db, id: string) {
+  const refund = await db.refund.findUnique({ where: { id }, include: { requestedBy: true, charge: true } });
+  if (!refund) return null;
+  const approval = refund.approvalRequestId
+    ? await db.approvalRequest.findUnique({ where: { id: refund.approvalRequestId }, include: { requestedBy: true, approvedBy: true, rejectedBy: true } })
+    : null;
+  return { refund, approval };
+}
+
+export async function refundStats(db: Db, now = new Date()) {
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const [today, pending] = await Promise.all([
+    db.refund.aggregate({ where: { status: "executed", updatedAt: { gte: startOfDay } }, _sum: { amountCents: true }, _count: { _all: true } }),
+    db.refund.aggregate({ where: { status: "pending_approval" }, _sum: { amountCents: true }, _count: { _all: true } }),
+  ]);
+  return {
+    executedToday: { count: today._count._all, cents: today._sum.amountCents ?? 0 },
+    pending: { count: pending._count._all, cents: pending._sum.amountCents ?? 0 },
+  };
+}

@@ -9,6 +9,8 @@ export type AppManifest = {
   description: string;
   /** Roles that may see the app in the nav and open its pages. */
   roles: Role[];
+  /** Entity types this app writes to the audit log, for the audit page's app filter. */
+  entityTypes?: string[];
   /** Maker-checker handlers keyed by ApprovalRequest.entityType. */
   approvalHandlers?: Record<string, ApprovalHandler>;
 };

@@ -5,4 +5,5 @@ export const kycApp: AppManifest = {
   name: "KYC Review",
   description: "Work the KYC case queue: claim, approve, reject, or escalate.",
   roles: ["reviewer", "approver", "admin"],
+  entityTypes: ["KycCase"],
 };

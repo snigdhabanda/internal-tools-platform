@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { ZodError, type ZodType } from "zod";
+import { ZodError, type ZodType, type ZodTypeDef } from "zod";
 import { BadRequestError, HttpError } from "./errors";
 
 export function errorResponse(error: unknown) {
@@ -24,7 +24,7 @@ export function route<Ctx>(handler: (req: NextRequest, ctx: Ctx) => Promise<Resp
   };
 }
 
-export async function parseBody<T>(req: NextRequest, schema: ZodType<T>): Promise<T> {
+export async function parseBody<T>(req: NextRequest, schema: ZodType<T, ZodTypeDef, unknown>): Promise<T> {
   let json: unknown;
   try {
     json = await req.json();

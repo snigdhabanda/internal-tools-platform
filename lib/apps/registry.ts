@@ -7,15 +7,15 @@ import { refundsApp } from "./refunds/manifest";
 /** Register every internal app here. Order = order in the left nav. */
 export const APPS: AppManifest[] = [refundsApp, kycApp];
 
-export type NavItem = { name: string; href: string; roles: Role[] };
+export type NavItem = { name: string; href: string; roles: Role[]; icon?: string };
 
 export const PLATFORM_NAV: NavItem[] = [
-  { name: "Approvals", href: "/approvals", roles: ["approver", "reviewer", "admin"] },
-  { name: "Audit log", href: "/audit", roles: ["admin"] },
+  { name: "Approvals", href: "/approvals", roles: ["approver", "reviewer", "admin"], icon: "approvals" },
+  { name: "Audit log", href: "/audit", roles: ["admin"], icon: "audit" },
 ];
 
 export function appNav(): NavItem[] {
-  return APPS.map((a) => ({ name: a.name, href: `/apps/${a.id}`, roles: a.roles }));
+  return APPS.map((a) => ({ name: a.name, href: `/apps/${a.id}`, roles: a.roles, icon: a.id }));
 }
 
 export function getApp(id: string): AppManifest {

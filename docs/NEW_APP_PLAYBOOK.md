@@ -200,7 +200,9 @@ export const APPS: AppManifest[] = [refundsApp, kycApp, <camelId>App];
 ## 7. Page: `app/apps/<id>/page.tsx`
 
 ```tsx
-import { Card, Forbidden, PageHeader, td, th } from "@/components/ui";
+import { EmptyState, Forbidden, PageHeader } from "@/components/shared";
+import { Card } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { prisma } from "@/lib/db";
 import { getApp } from "@/lib/apps/registry";
 import { list<Entity>s } from "@/lib/apps/<id>/service";
@@ -218,9 +220,13 @@ export default async function Page() {
 ```
 
 - Hiding buttons is UX only. The API route is the real gate.
-- For buttons that POST to an API route, use `components/ActionButton.tsx`. For forms, copy `app/apps/refunds/RequestRefundForm.tsx` (a `"use client"` component that `fetch`es the route and then calls `router.refresh()`).
+- For buttons that POST to an API route, use `components/ActionButton.tsx`. It toasts success or failure and refreshes server data. Pass `confirm` to ask first, and `confirm.reason` when the action needs a written reason (sent as `note`).
+- **Every money action asks for confirmation that names the amount and the recipient** (e.g. "Refund $500.00 to Adam Rutherford?"), in the dialog itself, before the request is sent.
+- For multi-step forms, copy `app/apps/refunds/NewRefundDialog.tsx` (a `"use client"` dialog that `fetch`es the route, shows server errors inline, toasts, then refreshes).
+- Every list needs loading, empty and error states: add `app/apps/<id>/loading.tsx` (use `PageSkeleton`), render `EmptyState` for no rows, and rely on the root `app/error.tsx` boundary.
+- Format money with `formatCents` from `@/lib/format`, right-aligned with `tabular-nums`.
 - Client components must not import `@/lib/db` or `@/lib/platform/{audit,approvals,auth}`.
-- Reuse `PageHeader`, `Card`, `StatusBadge`, `th`, `td` from `components/ui.tsx`.
+- Use shadcn/ui primitives from `components/ui/*` and the platform building blocks in `components/shared.tsx` (`PageHeader`, `StatCard`, `StatusBadge`, `LinkTabs`, `Pagination`, `Timeline`, `EmptyState`). Add new shadcn components with `npx shadcn@4.23.0 add <name>`, then change any `from "cn"` import to `from "@/lib/utils"`. Don't add new UI libraries.
 
 ## 8. Seed data: `prisma/seed.ts`
 

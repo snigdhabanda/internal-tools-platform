@@ -6,5 +6,6 @@ export const refundsApp: AppManifest = {
   name: "Refunds",
   description: "Request and approve customer refunds. $500+ requires a second approver.",
   roles: ["reviewer", "approver", "admin"],
+  entityTypes: [REFUND_ENTITY, "Charge"],
   approvalHandlers: { [REFUND_ENTITY]: refundApprovalHandler },
 };

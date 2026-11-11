@@ -1,108 +1,115 @@
+import Link from "next/link";
 import { ActionButton } from "@/components/ActionButton";
-import { Card, Forbidden, PageHeader, StatusBadge, td, th } from "@/components/ui";
+import { EmptyState, Forbidden, hrefWith, LinkTabs, PageHeader, Pagination, Person, RiskBadge, StatusBadge, TimeAgo } from "@/components/shared";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { prisma } from "@/lib/db";
-import { formatDate } from "@/lib/format";
-import { listCases } from "@/lib/apps/kyc/service";
-import { availableActions, KYC_STATUSES } from "@/lib/apps/kyc/state-machine";
+import { humanize } from "@/lib/format";
+import { actionsFor, queryCases, type KycTab } from "@/lib/apps/kyc/service";
 import { getApp } from "@/lib/apps/registry";
 import { getPageAccess } from "@/lib/platform/page";
+import { canViewPii } from "@/lib/apps/kyc/present";
 
 const app = getApp("kyc");
-const VARIANT = { claim: "primary", approve: "success", reject: "danger", escalate: "neutral" } as const;
+const VARIANT = { claim: "default", approve: "outline", reject: "outline", escalate: "outline" } as const;
+const TAB_LABELS: Record<KycTab, string> = { open: "Open", submitted: "New", in_review: "In review", escalated: "Escalated", approved: "Approved", rejected: "Rejected", all: "All" };
 
-export default async function KycPage() {
+type SearchParams = Promise<Record<string, string | undefined>>;
+
+export default async function KycPage({ searchParams }: { searchParams: SearchParams }) {
   const { user, allowed } = await getPageAccess(app.roles);
   if (!allowed) return <Forbidden roles={app.roles} />;
 
-  // Masking happens inside listCases() on the server; this page never sees raw PII unless allowed.
-  const cases = await listCases(prisma, user!);
-  const counts = Object.fromEntries(KYC_STATUSES.map((s) => [s, cases.filter((c) => c.status === s).length]));
+  const sp = await searchParams;
+  const current = { tab: sp.tab, q: sp.q, mine: sp.mine };
+  // Masking happens inside queryCases() on the server; this page never sees raw PII unless allowed.
+  const { rows, total, counts, tab, page, pageSize } = await queryCases(prisma, user!, { tab: sp.tab, q: sp.q, mine: sp.mine === "1", page: Number(sp.page) || 1 });
+  const piiVisible = canViewPii(user);
 
   return (
     <div>
       <PageHeader
-        title="KYC review queue"
-        description="submitted → in_review → approved | rejected | escalated. Escalated cases are resolved by approvers."
+        title="KYC review"
+        description="Claim a case to run the vendor check, then approve, reject or escalate. Escalated cases are resolved by a different approver."
       >
-        <span className={`rounded-md px-2 py-1 text-xs ${cases[0]?.piiMasked === false ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"}`}>
-          PII {cases[0]?.piiMasked === false ? "visible (approver)" : "masked"}
-        </span>
+        <Badge variant="outline" className={piiVisible ? "border-amber-200 bg-amber-50 text-amber-800" : ""}>
+          {piiVisible ? "PII visible (approver)" : "PII masked"}
+        </Badge>
       </PageHeader>
 
-      <div className="mb-4 flex flex-wrap gap-2 text-sm">
-        {KYC_STATUSES.map((s) => (
-          <span key={s} className="flex items-center gap-1">
-            <StatusBadge status={s} /> <span className="text-slate-500">{counts[s]}</span>
-          </span>
-        ))}
-      </div>
+      <Card className="gap-0 py-0">
+        <LinkTabs
+          active={tab}
+          tabs={(Object.keys(TAB_LABELS) as KycTab[]).map((t) => ({ key: t, label: TAB_LABELS[t], count: counts[t], highlight: t === "escalated", href: hrefWith("/apps/kyc", current, { tab: t, page: undefined }) }))}
+        />
+        <form method="get" className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
+          <input type="hidden" name="tab" value={tab} />
+          <Input name="q" defaultValue={sp.q ?? ""} placeholder="Search applicant name, email or case ID" className="max-w-sm" />
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input type="checkbox" name="mine" value="1" defaultChecked={sp.mine === "1"} className="size-4 accent-primary" /> Assigned to me
+          </label>
+          <Button type="submit" variant="secondary">Apply</Button>
+          {(sp.q || sp.mine) && <Button variant="ghost" asChild><Link href={hrefWith("/apps/kyc", { tab })}>Clear</Link></Button>}
+        </form>
 
-      <Card>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-slate-200" data-testid="kyc-table">
-            <thead>
-              <tr>
-                <th className={th}>Applicant</th>
-                <th className={th}>SSN</th>
-                <th className={th}>ID</th>
-                <th className={th}>Status</th>
-                <th className={th}>Vendor</th>
-                <th className={th}>Assigned</th>
-                <th className={th}>Submitted</th>
-                <th className={th}>Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {cases.map((c) => {
-                const actions = availableActions(c.status).filter(
-                  (t) =>
-                    t.roles.some((r) => user!.roles.includes(r)) &&
-                    (c.status !== "in_review" || c.assignedToId === user!.id) &&
-                    (c.status !== "escalated" || c.escalatedById !== user!.id),
-                );
-                return (
-                  <tr key={c.id}>
-                    <td className={td}>
-                      <div className="font-medium">{c.applicantName}</div>
-                      <div className="text-xs text-slate-500">{c.email} · DOB {c.dateOfBirth} · {c.country}</div>
-                    </td>
-                    <td className={`${td} whitespace-nowrap font-mono`} data-testid="ssn">{c.ssn}</td>
-                    <td className={`${td} font-mono`}>
-                      <div>{c.idNumber}</div>
-                      <div className="text-xs text-slate-500">{c.idType.replace(/_/g, " ")}</div>
-                    </td>
-                    <td className={td}><StatusBadge status={c.status} /></td>
-                    <td className={`${td} text-xs`}>
-                      {c.vendorResult ? (
-                        <>
-                          <div>{c.vendorResult}</div>
-                          <div className="text-slate-500">risk {c.riskScore}</div>
-                        </>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className={td}>{c.assignedToName ?? <span className="text-slate-400">—</span>}</td>
-                    <td className={`${td} whitespace-nowrap text-slate-500`}>{formatDate(c.createdAt)}</td>
-                    <td className={td}>
-                      <div className="flex flex-wrap gap-2">
-                        {actions.map((t) => (
-                          <ActionButton
-                            key={t.action}
-                            url={`/api/apps/kyc/${c.id}/transition`}
-                            body={{ action: t.action }}
-                            label={t.action}
-                            variant={VARIANT[t.action]}
-                          />
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        {rows.length === 0 ? (
+          <EmptyState title="No cases here" description={sp.q || sp.mine ? "No cases match these filters." : "The queue is empty for this status."} />
+        ) : (
+          <Table data-testid="kyc-table">
+            <TableHeader className="bg-muted/40">
+              <TableRow>
+                <TableHead className="pl-4">Applicant</TableHead>
+                <TableHead>SSN</TableHead>
+                <TableHead>ID document</TableHead>
+                <TableHead>Risk</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Assignee</TableHead>
+                <TableHead>Submitted</TableHead>
+                <TableHead className="pr-4 text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((c) => (
+                <TableRow key={c.id}>
+                  <TableCell className="pl-4">
+                    <Person name={c.applicantName} sub={`${c.email} · ${c.country} · DOB ${c.dateOfBirth}`} />
+                  </TableCell>
+                  <TableCell className="font-mono text-xs" data-testid="ssn">{c.ssn}</TableCell>
+                  <TableCell>
+                    <div className="font-mono text-xs">{c.idNumber}</div>
+                    <div className="text-xs text-muted-foreground">{humanize(c.idType)}</div>
+                  </TableCell>
+                  <TableCell>
+                    <RiskBadge score={c.riskScore} />
+                    {c.vendorResult && <div className="mt-1 text-xs text-muted-foreground">Vendor: {c.vendorResult}</div>}
+                  </TableCell>
+                  <TableCell><StatusBadge status={c.status} /></TableCell>
+                  <TableCell className="text-muted-foreground">{c.assignedToName ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground"><TimeAgo date={c.createdAt} /></TableCell>
+                  <TableCell className="pr-4">
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {actionsFor(user!, c).map((t) => (
+                        <ActionButton
+                          key={t.action}
+                          url={`/api/apps/kyc/${c.id}/transition`}
+                          body={{ action: t.action }}
+                          label={t.action}
+                          variant={VARIANT[t.action]}
+                          successMessage={`${c.applicantName}: ${t.action === "claim" ? "claimed, vendor check complete" : `${t.to.replace("_", " ")}`}`}
+                          confirm={t.action === "claim" ? undefined : { title: `${humanize(t.action)} ${c.applicantName}?`, description: `Moves the case from ${humanize(c.status)} to ${humanize(t.to)}. This is recorded in the audit log.`, destructive: t.action === "reject" }}
+                        />
+                      ))}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        <Pagination page={page} pageSize={pageSize} total={total} href={(p) => hrefWith("/apps/kyc", current, { page: p })} />
       </Card>
     </div>
   );

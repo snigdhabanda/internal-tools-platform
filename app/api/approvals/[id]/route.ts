@@ -8,10 +8,15 @@ import { getUserFromRequest } from "@/lib/platform/auth";
 import { parseBody, route } from "@/lib/platform/http";
 import { requireRole } from "@/lib/platform/rbac";
 
-const bodySchema = z.object({
-  decision: z.enum(["approved", "rejected"]),
-  note: z.string().max(500).optional(),
-});
+const bodySchema = z
+  .object({
+    decision: z.enum(["approved", "rejected"]),
+    note: z.string().trim().max(500).optional(),
+  })
+  .refine((b) => b.decision !== "rejected" || (b.note && b.note.length >= 3), {
+    message: "A reason is required when rejecting",
+    path: ["note"],
+  });
 
 /** Generic maker-checker decision endpoint for every app's ApprovalRequests. */
 export const POST = route(async (req, { params }: { params: Promise<{ id: string }> }) => {
