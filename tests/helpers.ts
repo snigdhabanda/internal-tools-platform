@@ -28,9 +28,9 @@ export function asUser(key: TestUserKey): CurrentUser {
 export function req(
   method: string,
   path: string,
-  opts: { as?: TestUserKey; body?: unknown } = {},
+  opts: { as?: TestUserKey; body?: unknown; headers?: Record<string, string> } = {},
 ) {
-  const headers = new Headers({ "content-type": "application/json" });
+  const headers = new Headers({ "content-type": "application/json", ...opts.headers });
   if (opts.as) headers.set("cookie", `${SESSION_COOKIE}=${TEST_USERS[opts.as].id}`);
   return new NextRequest(new URL(path, "http://localhost"), {
     method,

@@ -21,7 +21,8 @@ The reference implementations are **Refunds** (`lib/apps/refunds`, maker-checker
 5. **Writes go through API routes in `app/api/apps/<id>/`.** Server Actions (`"use server"`) are forbidden, and the guardrail test fails on them.
 6. **Sensitive fields are masked on the server** before data leaves a service function. Never send raw rows containing PII to the client or put PII in audit `before`/`after`.
 7. **External systems are called only through a client in `lib/integrations/<name>.ts`.**
-8. **Do not edit `lib/platform/*` or weaken `tests/guardrails.test.ts`** as part of an app PR. If the platform is missing something, raise it separately.
+8. **Every money-movement endpoint must be idempotent.** The client sends an `Idempotency-Key` header (a UUID per attempt, reused on retry); a missing key is `400`. Store it in a `@unique` column, return the original result for a repeated key without calling the provider again, audit the repeat as a duplicate, and pass the same key to the provider. Any status change that triggers money movement must be a conditional update (`updateMany({ where: { id, status: "<expected>" } })`), and the provider is called only if it matched a row. See `app/api/apps/refunds/route.ts` and `lib/apps/refunds/service.ts`.
+9. **Do not edit `lib/platform/*` or weaken `tests/guardrails.test.ts`** as part of an app PR. If the platform is missing something, raise it separately.
 
 Roles: `reviewer` (makers / day-to-day operators), `approver` (checkers, may see PII), `admin` (platform admins: audit log, configuration). `admin` is **not** a superuser and does not imply the other roles.
 
@@ -129,7 +130,7 @@ Rules:
 
 ### 3b. If the app calls an external system
 
-Create `lib/integrations/<vendor>.ts` exporting a typed client object with a stubbed implementation that returns realistic success responses with no network access (see `payments.ts`, `kyc.ts`). Pass an idempotency key for anything that moves money or changes state. Read credentials only from env vars, never hard-coded.
+Create `lib/integrations/<vendor>.ts` exporting a typed client object with a stubbed implementation that returns realistic success responses with no network access (see `payments.ts`, `kyc.ts`). Pass an idempotency key for anything that moves money or changes state; for money movement, it is the client's `Idempotency-Key` (ground rule 8). Read credentials only from env vars, never hard-coded.
 
 ---
 
@@ -234,7 +235,8 @@ Use the helpers in `tests/helpers.ts`: `ensureUsers()`, `req(method, path, { as,
 3. **Validation**: a bad body returns `400`.
 4. If you use **approvals**: the requester cannot approve their own request (`403`), a different approver succeeds, and rejection leaves no side effects.
 5. If you have a **state machine**: a test enumerating the allowed transitions table, and an invalid transition returns `409`.
-6. If you have **PII**: the raw JSON response for a non-approver does **not contain** the raw value (`expect(await res.text()).not.toContain(raw)`), and an approver gets the full value. Audit entries don't contain PII.
+6. If you **move money**: the same `Idempotency-Key` twice gives one record and one provider call (spy on the integration with `vi.spyOn`), a missing key is `400`, and two concurrent approvals via `Promise.all` call the provider once.
+7. If you have **PII**: the raw JSON response for a non-approver does **not contain** the raw value (`expect(await res.text()).not.toContain(raw)`), and an approver gets the full value. Audit entries don't contain PII.
 
 `tests/guardrails.test.ts` automatically picks up your new routes and your manifest. You don't need to edit it.
 
@@ -260,6 +262,7 @@ PR description must include: what the app does, its roles matrix (role → allow
 - [ ] Model + new migration; enum-like strings documented and validated with zod
 - [ ] `lib/apps/<id>/service.ts`: all logic; writes take `tx`; typed errors
 - [ ] Routes in `app/api/apps/<id>/`: `requireRole` first, `audit()` in the same transaction on every write
+- [ ] Money movement (if any): `Idempotency-Key` required, unique column, duplicates audited, conditional status updates
 - [ ] Approvals via `createApprovalRequest` + handler registered in manifest (if applicable)
 - [ ] PII masked server-side, excluded from audit (if applicable)
 - [ ] Integration stub in `lib/integrations/` (if applicable)
