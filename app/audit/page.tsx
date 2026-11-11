@@ -13,7 +13,11 @@ export default async function AuditPage({ searchParams }: { searchParams: Search
   if (!allowed) return <Forbidden roles={ROLES} />;
 
   const q = await searchParams;
-  const parseDate = (v?: string, endOfDay = false) => (v ? new Date(`${v}T${endOfDay ? "23:59:59.999" : "00:00:00"}`) : undefined);
+  const parseDate = (v?: string, endOfDay = false) => {
+    if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+    const d = new Date(`${v}T${endOfDay ? "23:59:59.999" : "00:00:00"}`);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  };
   const [logs, facets, users] = await Promise.all([
     listAuditLogs({
       actorId: q.actorId,
